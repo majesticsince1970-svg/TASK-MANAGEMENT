@@ -11,10 +11,29 @@ const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY') || '';
 const GEMINI_MODEL = 'gemini-2.0-flash';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-const SYSTEM_PROMPT = `You are Majestic AI, an intelligent assistant for Majestic Jewellers' operations management system.
-You help managers and staff answer questions about tasks, workload, deadlines, and team performance.
-Be concise, professional, and action-oriented. Answer in the same language the user asks in (English or Malayalam).
-When you use a tool, cite which data source you used in your response.`;
+const SYSTEM_PROMPT = `You are the executive AI Operations Manager for Majestic Jewellers, a luxury jewellery brand in Kerala, India.
+You take full ownership and responsibility for shop operations, task assignment, employee tracking, and reporting.
+
+YOUR RESPONSIBILITIES:
+1. TASK SCHEDULING & ASSIGNMENT:
+   - When the user asks to schedule, create, or assign a task to someone (e.g. "Assign the gold verification task to Rashid for 4 PM today" or in Malayalam "ഇന്നത്തെ പെയ്മെന്റ് ലിസ്റ്റ് അക്കൗണ്ടന്റിന് അപ്ഡേറ്റ് ചെയ്യാൻ പറയൂ"), you MUST execute it using the appropriate tool.
+   - Look up the person using 'get_person' or 'get_team' if needed to find their UUID and department.
+   - Use 'schedule_task' to immediately assign it directly, or 'draft_task' if requested as draft.
+   - Calculate due dates correctly in IST (Asia/Kolkata).
+
+2. GENERATING COMPREHENSIVE REPORTS:
+   - When asked for ANY report (e.g. daily operations, employee performance, sales/stock audits, department summaries, EOD reports, leaderboard), generate a thorough, executive-level report.
+   - Use 'generate_report', 'get_stats', 'get_department_summary', 'get_workload', and 'get_overdue_tasks' to pull real facts.
+   - Format reports with clear sections: Executive Summary, Key Metrics, Department Breakdown, Risks/Overdue Items, and Action Items.
+
+3. PROACTIVE MANAGEMENT & PROBLEM SOLVING:
+   - If something is overdue or someone is overloaded, proactively warn the owner and propose specific solutions.
+   - Always confirm exactly what action was taken (task title, assignee name, due date, department).
+
+LANGUAGE & TONE:
+- Fluent in both Malayalam (മലയാളം) and English.
+- Always respond in the EXACT language used by the user. If they speak or write in Malayalam, respond in natural, professional Malayalam. If English, respond in professional English.
+- Professional, confident, authoritative yet respectful tone of a trusted executive general manager.`;
 
 const TOOLS = [
   {
@@ -122,17 +141,55 @@ const TOOLS = [
       },
       {
         name: 'draft_task',
-        description: 'Create a draft task that the owner can review before activation. Use this when the user asks to create or add a task.',
+        description: 'Create a draft task that the owner can review before activation. Use this when the user asks to draft a task.',
         parameters: {
           type: 'OBJECT',
           properties: {
             title: { type: 'STRING', description: 'Task title' },
             description: { type: 'STRING', description: 'Task description' },
-            timing_type: { type: 'STRING', description: 'Timing type: daily, weekly, monthly, or one_time' },
+            timing_type: { type: 'STRING', description: 'Timing type: urgent, dated, long, flexible, repeating' },
             department_id: { type: 'STRING', description: 'Optional department UUID' },
             owner_id: { type: 'STRING', description: 'Optional owner UUID' },
           },
-          required: ['title', 'description', 'timing_type'],
+          required: ['title'],
+        },
+      },
+      {
+        name: 'schedule_task',
+        description: 'Directly schedule and assign a live, active task to a specific person or department. Use this whenever the user asks to schedule, assign, give, or create an immediate task for someone.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            title: { type: 'STRING', description: 'Task title' },
+            description: { type: 'STRING', description: 'Task description or instructions' },
+            assignee_name_or_id: { type: 'STRING', description: 'Name, job role, or UUID of person to assign (e.g. Rashid, James, Accountant, Creative)' },
+            timing_type: { type: 'STRING', description: 'Timing type: urgent, dated, long, or flexible (default: dated)' },
+            due_at: { type: 'STRING', description: 'ISO timestamptz when due (defaults to end of business day or 2h from now if urgent)' },
+            importance: { type: 'STRING', description: 'Importance: normal or important' },
+            department_name_or_id: { type: 'STRING', description: 'Optional department name or UUID' },
+          },
+          required: ['title'],
+        },
+      },
+      {
+        name: 'get_team',
+        description: 'Get the full list of staff, roles, departments, points, and contact info to identify whom to assign tasks to.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {},
+        },
+      },
+      {
+        name: 'generate_report',
+        description: 'Generate real-time executive report data on team performance, task completion rates, departmental efficiency, or leaderboard.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            report_type: { type: 'STRING', description: 'Type: overview, department, employee_performance, eod, overdue_audit, or leaderboard' },
+            department_id: { type: 'STRING', description: 'Optional department UUID' },
+            period_days: { type: 'INTEGER', description: 'Lookback days (default 7)' },
+          },
+          required: ['report_type'],
         },
       },
     ],
@@ -375,8 +432,8 @@ async function executeTool(
       const { data, error } = await supabase.rpc('create_task', {
         payload: {
           title: args.title,
-          description: args.description,
-          timing_type: args.timing_type,
+          description: args.description || '',
+          timing_type: args.timing_type || 'dated',
           department_id: args.department_id || null,
           owner_id: args.owner_id || null,
           is_draft: true,
@@ -386,6 +443,154 @@ async function executeTool(
 
       if (error) throw error;
       return { result: data, source: 'create_task RPC (draft)' };
+    }
+
+    case 'schedule_task': {
+      let resolvedOwnerId = null;
+      let resolvedDeptId = null;
+
+      // Find person if specified
+      if (args.assignee_name_or_id) {
+        const val = String(args.assignee_name_or_id).toLowerCase().trim();
+        const { data: people } = await supabase.from('profiles').select('id, full_name, role, job_title, department_id');
+        const matched = people?.find((p: any) =>
+          p.id === args.assignee_name_or_id ||
+          p.full_name.toLowerCase().includes(val) ||
+          (p.job_title && p.job_title.toLowerCase().includes(val)) ||
+          (p.role && p.role.toLowerCase().includes(val))
+        );
+        if (matched) {
+          resolvedOwnerId = matched.id;
+          resolvedDeptId = matched.department_id;
+        }
+      }
+
+      // Find department if specified
+      if (args.department_name_or_id && !resolvedDeptId) {
+        const val = String(args.department_name_or_id).toLowerCase().trim();
+        const { data: depts } = await supabase.from('departments').select('id, name');
+        const matchDept = depts?.find((d: any) =>
+          d.id === args.department_name_or_id ||
+          d.name.toLowerCase().includes(val)
+        );
+        if (matchDept) resolvedDeptId = matchDept.id;
+      }
+
+      const timing = args.timing_type || 'dated';
+      let dueAt = args.due_at;
+      if (!dueAt && timing !== 'flexible') {
+        const d = new Date();
+        if (timing === 'urgent') {
+          d.setHours(d.getHours() + 2);
+        } else {
+          d.setDate(d.getDate() + 1);
+          d.setHours(18, 0, 0, 0);
+        }
+        dueAt = d.toISOString();
+      }
+
+      const { data, error } = await supabase.rpc('create_task', {
+        payload: {
+          title: args.title,
+          description: args.description || '',
+          timing_type: timing,
+          importance: args.importance || 'normal',
+          department_id: resolvedDeptId,
+          owner_id: resolvedOwnerId,
+          due_at: dueAt,
+          is_draft: false,
+          source: 'ai_manager',
+        },
+      });
+
+      if (error) throw error;
+      return {
+        result: {
+          success: true,
+          task_id: data?.task_id || data?.id,
+          assigned_to: resolvedOwnerId,
+          due_at: dueAt,
+          status: 'new',
+        },
+        source: 'schedule_task RPC',
+      };
+    }
+
+    case 'get_team': {
+      const { data: profiles, error } = await supabase
+        .from('profiles')
+        .select('id, full_name, role, job_title, department_id, points, availability, phone')
+        .order('full_name');
+      if (error) throw error;
+
+      const { data: depts } = await supabase.from('departments').select('id, name');
+      const deptMap = Object.fromEntries((depts || []).map((d: any) => [d.id, d.name]));
+
+      const team = (profiles || []).map((p: any) => ({
+        ...p,
+        department_name: deptMap[p.department_id] || 'Unassigned',
+      }));
+
+      return { result: team, source: 'profiles & departments' };
+    }
+
+    case 'generate_report': {
+      const now = new Date();
+      const periodDays = args.period_days || 7;
+      const sinceDate = new Date(now.getTime() - periodDays * 86400000).toISOString();
+
+      let taskQuery = supabase.from('tasks').select('*');
+      if (args.department_id) taskQuery = taskQuery.eq('department_id', args.department_id);
+      const { data: tasks, error: tErr } = await taskQuery;
+      if (tErr) throw tErr;
+
+      const { data: profiles } = await supabase.from('profiles').select('id, full_name, role, points, availability');
+      const { data: depts } = await supabase.from('departments').select('id, name');
+
+      const all = tasks || [];
+      const total = all.length;
+      const completed = all.filter((t: any) => t.status === 'done').length;
+      const inProgress = all.filter((t: any) => t.status === 'in_progress').length;
+      const submitted = all.filter((t: any) => t.status === 'submitted').length;
+      const overdue = all.filter((t: any) => t.due_at && new Date(t.due_at) < now && !['done', 'cancelled'].includes(t.status)).length;
+      const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+      // Department breakdown
+      const deptBreakdown: Record<string, any> = {};
+      for (const d of depts || []) {
+        const dTasks = all.filter((t: any) => t.department_id === d.id);
+        const dDone = dTasks.filter((t: any) => t.status === 'done').length;
+        deptBreakdown[d.name] = {
+          total: dTasks.length,
+          completed: dDone,
+          rate: dTasks.length > 0 ? Math.round((dDone / dTasks.length) * 100) : 0,
+        };
+      }
+
+      // Leaderboard
+      const leaderboard = (profiles || [])
+        .sort((a: any, b: any) => (b.points || 0) - (a.points || 0))
+        .slice(0, 5)
+        .map((p: any) => ({ name: p.full_name, role: p.role, points: p.points }));
+
+      return {
+        result: {
+          report_type: args.report_type,
+          generated_at: now.toISOString(),
+          period_days: periodDays,
+          metrics: {
+            total_tasks: total,
+            completed_tasks: completed,
+            in_progress: inProgress,
+            awaiting_review: submitted,
+            overdue_tasks: overdue,
+            completion_rate_percent: completionRate,
+          },
+          department_breakdown: deptBreakdown,
+          leaderboard_top_5: leaderboard,
+        },
+        source: 'executive analytics engine',
+      };
     }
 
     default:

@@ -452,52 +452,6 @@ export default function AIManagerPage() {
     }
   }, [isListening]);
 
-  /* ─── Process message (voice or typed) — tries Gemini first, falls back to local ─── */
-
-  const processMessage = useCallback(async (text: string) => {
-    setChatMessages(prev => [...prev, { role: 'user', text }]);
-    setIsProcessing(true);
-    setAskInput('');
-
-    const userId = profile?.id || '';
-
-    // Detect if this is a task creation command (local parsing still needed for that)
-    const command = parseVoiceCommand(text, people as Profile[]);
-
-    // Handle task creation locally (needs mutateAsync)
-    if (command.intent === 'create_task' && command.title && command.title.length >= 3) {
-      await handleTaskCreation(command);
-      setIsProcessing(false);
-      return;
-    }
-
-    // ─── Try Gemini API first ───
-    try {
-      const { answer, sources } = await callGeminiAI(text, userId);
-      
-      // Clean up the answer — strip markdown that might cause rendering issues
-      let cleanAnswer = answer;
-
-      // Speak the response (extract plain text for TTS)
-      const plainText = cleanAnswer.replace(/\*\*(.+?)\*\*/g, '$1').replace(/[#•📋⚠️🔔👤📊🔄📥👥✅❌📝⏰🏷️📎🎤🤔💡👋✨🇮🇳]/g, '').trim();
-      if (plainText.length < 300) {
-        speakText(plainText, language);
-      }
-
-      setChatMessages(prev => [...prev, { role: 'ai', text: cleanAnswer }]);
-      setIsProcessing(false);
-      return;
-    } catch {
-      // Gemini unavailable — fall back to local parser
-      console.info('Gemini API unavailable, using local parser');
-    }
-
-    // ─── Local fallback ───
-    const response = buildLocalResponse(command, allTasks as any[], people as Profile[], openAlerts, language);
-    setChatMessages(prev => [...prev, { role: 'ai', text: response }]);
-    setIsProcessing(false);
-  }, [people, allTasks, openAlerts, language, profile]);
-
   /* ─── Handle task creation ─── */
 
   const handleTaskCreation = useCallback(async (command: ParsedCommand) => {
@@ -547,6 +501,45 @@ export default function AIManagerPage() {
       setChatMessages(prev => [...prev, { role: 'ai', text: `❌ Error creating task: ${err.message || 'Something went wrong'}. Please try again or create it manually.` }]);
     }
   }, [people, language, createTask]);
+
+  /* ─── Process message (voice or typed) — Gemini first with executive tools ─── */
+
+  const processMessage = useCallback(async (text: string) => {
+    setChatMessages(prev => [...prev, { role: 'user', text }]);
+    setIsProcessing(true);
+    setAskInput('');
+
+    const userId = profile?.id || '';
+
+    // ─── Try Gemini Executive AI first (can schedule tasks, pull real reports, query DB) ───
+    try {
+      const { answer, sources } = await callGeminiAI(text, userId);
+      
+      // Clean up the answer for TTS
+      const plainText = answer.replace(/\*\*(.+?)\*\*/g, '$1').replace(/[#•📋⚠️🔔👤📊🔄📥👥✅❌📝⏰🏷️📎🎤🤔💡👋✨🇮🇳]/g, '').trim();
+      if (plainText.length < 350) {
+        speakText(plainText, language);
+      }
+
+      setChatMessages(prev => [...prev, { role: 'ai', text: answer }]);
+      setIsProcessing(false);
+      return;
+    } catch (err: any) {
+      console.warn('Gemini API call failed, using local executive fallback:', err?.message);
+    }
+
+    // ─── Local Fallback if offline or edge function fails ───
+    const command = parseVoiceCommand(text, people as Profile[]);
+    if (command.intent === 'create_task' && command.title && command.title.length >= 3) {
+      await handleTaskCreation(command);
+      setIsProcessing(false);
+      return;
+    }
+
+    const response = buildLocalResponse(command, allTasks as any[], people as Profile[], openAlerts, language);
+    setChatMessages(prev => [...prev, { role: 'ai', text: response }]);
+    setIsProcessing(false);
+  }, [people, allTasks, openAlerts, language, profile, handleTaskCreation]);
 
   /* ─── Typed input send handler ─── */
 
