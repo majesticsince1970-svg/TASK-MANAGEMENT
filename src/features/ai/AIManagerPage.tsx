@@ -1,114 +1,251 @@
 import { useState } from 'react';
-import { Button } from '@/components/ui/button';
+import { useTranslation } from 'react-i18next';
+import { useAiAlerts, useActionAiAlert } from '@/lib/hooks';
 import { cn } from '@/lib/utils';
-import { Brain, Mic, Send, Clock, ChevronRight, AlertTriangle, Lightbulb, Zap, Volume2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  Bot, AlertTriangle, Lightbulb, TrendingUp, CheckCircle, Clock,
+  MessageSquare, Send, Volume2, ChevronRight, Eye, X, Bell
+} from 'lucide-react';
+import { formatDistanceToNow } from 'date-fns';
 
-const ALERTS = [
-  { id: '1', level: 'critical' as const, title: 'Cash count not submitted', explanation: 'Accounts — Morning cash & safe count is 40 minutes overdue. James Sheary has not opened the task.', action: 'Send urgent reminder' },
-  { id: '2', level: 'important' as const, title: 'James has 12 tasks due this week', explanation: 'This is above the normal workload. Consider redistributing 3 tasks to other Accounts staff.', action: 'View workload' },
-  { id: '3', level: 'insight' as const, title: 'Adil completed 5 reels this week — best streak', explanation: 'Creative department is on track. Adil has maintained 100% on-time delivery for 2 weeks.', action: '' },
-];
+type AITab = 'inbox' | 'ask' | 'digests';
 
-const levelConfig = {
-  critical: { color: '#C62828', bg: '#C62828', icon: Zap, label: 'Critical' },
-  important: { color: '#C77A1E', bg: '#C77A1E', icon: AlertTriangle, label: 'Important' },
-  insight: { color: '#5B3FBF', bg: '#5B3FBF', icon: Lightbulb, label: 'Insight' },
+const LEVEL_CONFIG = {
+  critical: { icon: AlertTriangle, color: 'text-[var(--color-urgent)]', bg: 'bg-red-50', border: 'border-red-200' },
+  important: { icon: Bell, color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200' },
+  insight: { icon: Lightbulb, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
 };
 
-export default function AIManagerPage() {
-  const [tab, setTab] = useState<'inbox' | 'ask' | 'digests'>('inbox');
-  const [question, setQuestion] = useState('');
+const DEMO_ALERTS = [
+  { id: 'ai1', level: 'critical', title: 'Morning cash count overdue by 2 hours', explanation: 'The morning cash count task was due at 10:00 AM and has not been started. This is a daily critical routine.', suggested_action: 'Send reminder to James Sheary', status: 'open', rule_key: 'overdue_urgent', created_at: new Date(Date.now() - 3600000 * 2).toISOString() },
+  { id: 'ai2', level: 'important', title: 'Diwali reel edit is behind schedule', explanation: 'Task has been in progress for 3 days with no proof submitted. Due tomorrow.', suggested_action: 'Check in with Adil', status: 'open', rule_key: 'stuck_in_progress', created_at: new Date(Date.now() - 3600000 * 5).toISOString() },
+  { id: 'ai3', level: 'insight', title: 'Adil has 8 active tasks this week', explanation: 'Higher than usual workload. Average is 5 tasks. Consider redistributing some tasks.', suggested_action: 'Review task assignments', status: 'open', rule_key: 'high_workload', created_at: new Date(Date.now() - 3600000 * 8).toISOString() },
+  { id: 'ai4', level: 'important', title: 'Payment list date change requested twice', explanation: 'The same task has had 2 date change requests. May indicate scope issues.', suggested_action: 'Discuss scope with team', status: 'actioned', rule_key: 'repeated_date_changes', created_at: new Date(Date.now() - 86400000).toISOString() },
+];
 
-  const tabs = [
-    { key: 'inbox' as const, label: 'AI Inbox', count: 3 },
-    { key: 'ask' as const, label: 'Ask AI', count: 0 },
-    { key: 'digests' as const, label: 'Digests', count: 0 },
-  ];
+const DEMO_DIGESTS = [
+  {
+    id: 'd1', date: 'Today',
+    summary: '8 tasks completed, 3 overdue, 2 new alerts. Morning cash count was late by 2h. Diwali reel is at risk. Overall completion rate: 78%.',
+    highlights: ['Morning routine compliance: 88%', 'Adil workload high (8 tasks)', 'Stock audit on track (45% done)'],
+  },
+  {
+    id: 'd2', date: 'Yesterday',
+    summary: '12 tasks completed, 1 overdue. All routines ran on time. Great day for the team!',
+    highlights: ['100% routine compliance', 'Jelisha earned 45 points', 'No critical alerts'],
+  },
+];
+
+export default function AIManagerPage() {
+  const { t } = useTranslation();
+  const [tab, setTab] = useState<AITab>('inbox');
+  const [askInput, setAskInput] = useState('');
+  const [askHistory, setAskHistory] = useState<{ role: 'user' | 'ai'; text: string }[]>([]);
+  const { data: remoteAlerts } = useAiAlerts('open');
+  const actionAlert = useActionAiAlert();
+
+  const alerts = (remoteAlerts && remoteAlerts.length > 0) ? remoteAlerts : DEMO_ALERTS;
+  const openAlerts = alerts.filter((a: any) => a.status === 'open');
+
+  const handleAsk = () => {
+    if (!askInput.trim()) return;
+    setAskHistory([...askHistory, { role: 'user', text: askInput }]);
+    // In production, this would call the AI edge function
+    setTimeout(() => {
+      setAskHistory(prev => [...prev, {
+        role: 'ai',
+        text: `Based on the current data: There are ${openAlerts.length} open alerts. The morning cash count is overdue. I recommend checking in with the team about their current tasks.`
+      }]);
+    }, 1000);
+    setAskInput('');
+  };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-4">
+    <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-lg bg-[var(--color-ai)] flex items-center justify-center">
-          <Brain className="w-5 h-5 text-white" />
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[var(--color-maroon)] to-[#5D1020] flex items-center justify-center">
+          <Bot className="w-5 h-5 text-white" />
         </div>
-        <h1 className="text-2xl font-bold">AI Manager</h1>
+        <div>
+          <h1 className="text-2xl font-bold">AI Manager</h1>
+          <p className="text-xs text-[var(--color-ink)]/40">Your intelligent assistant</p>
+        </div>
       </div>
 
+      {/* Tabs */}
       <div className="flex gap-1">
-        {tabs.map((t) => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={cn('px-4 py-2 text-sm rounded-lg transition-colors',
-              tab === t.key ? 'bg-[var(--color-ai)] text-white font-medium' : 'text-[var(--color-ink)]/60 hover:bg-[var(--color-ivory)]')}>
-            {t.label} {t.count > 0 && <span className="ml-1 text-xs opacity-70">{t.count}</span>}
+        {[
+          { key: 'inbox' as AITab, label: 'Inbox', icon: Bell, count: openAlerts.length },
+          { key: 'ask' as AITab, label: 'Ask AI', icon: MessageSquare },
+          { key: 'digests' as AITab, label: 'Digests', icon: TrendingUp },
+        ].map((tabItem) => (
+          <button
+            key={tabItem.key}
+            onClick={() => setTab(tabItem.key)}
+            className={cn(
+              'flex items-center gap-1.5 px-4 py-2 text-sm rounded-lg transition-colors',
+              tab === tabItem.key
+                ? 'bg-[var(--color-maroon)] text-white font-medium'
+                : 'text-[var(--color-ink)]/60 hover:bg-[var(--color-ivory)]'
+            )}
+          >
+            <tabItem.icon className="w-4 h-4" /> {tabItem.label}
+            {tabItem.count != null && tabItem.count > 0 && (
+              <span className={cn('text-xs', tab === tabItem.key ? 'text-white/70' : 'text-[var(--color-ink)]/30')}>
+                {tabItem.count}
+              </span>
+            )}
           </button>
         ))}
       </div>
 
+      {/* Inbox */}
       {tab === 'inbox' && (
         <div className="space-y-3">
-          {ALERTS.map((alert) => {
-            const config = levelConfig[alert.level];
-            const Icon = config.icon;
+          {alerts.map((alert: any) => {
+            const config = LEVEL_CONFIG[alert.level as keyof typeof LEVEL_CONFIG] || LEVEL_CONFIG.insight;
+            const LevelIcon = config.icon;
+            const isOpen = alert.status === 'open';
+
             return (
-              <div key={alert.id} className="bg-white rounded-xl border border-[#E5DDD3] p-4" style={{ borderLeftWidth: 4, borderLeftColor: config.color }}>
+              <div key={alert.id} className={cn(
+                'rounded-xl border p-4 transition-all',
+                isOpen ? `${config.bg} ${config.border}` : 'bg-white border-[#E5DDD3] opacity-60'
+              )}>
                 <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: config.color + '15' }}>
-                    <Icon className="w-4 h-4" style={{ color: config.color }} />
-                  </div>
+                  <LevelIcon className={cn('w-5 h-5 mt-0.5 shrink-0', config.color)} />
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded text-white" style={{ backgroundColor: config.color }}>{config.label}</span>
-                      <span className="text-xs text-[var(--color-ink)]/40">2 min ago</span>
+                      <h3 className="text-sm font-semibold">{alert.title}</h3>
+                      <span className={cn(
+                        'px-1.5 py-0.5 rounded text-[10px] font-medium uppercase',
+                        alert.level === 'critical' ? 'bg-red-100 text-red-700' :
+                        alert.level === 'important' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'
+                      )}>
+                        {alert.level}
+                      </span>
                     </div>
-                    <h3 className="font-semibold text-sm">{alert.title}</h3>
-                    <p className="text-sm text-[var(--color-ink)]/60 mt-1">{alert.explanation}</p>
-                    <div className="flex gap-2 mt-3">
-                      {alert.action && <Button size="sm">{alert.action}</Button>}
-                      <Button variant="outline" size="sm">Snooze</Button>
-                      <Button variant="ghost" size="sm" className="text-[var(--color-ink)]/40">Not important</Button>
+                    <p className="text-sm text-[var(--color-ink)]/60 mb-2">{alert.explanation}</p>
+                    {alert.suggested_action && (
+                      <p className="text-xs text-[var(--color-ink)]/40 mb-2">
+                        💡 Suggestion: {alert.suggested_action}
+                      </p>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-[var(--color-ink)]/30">
+                        {formatDistanceToNow(new Date(alert.created_at), { addSuffix: true })}
+                      </span>
+                      {isOpen && (
+                        <div className="flex gap-1 ml-auto">
+                          <Button size="sm" variant="outline" className="h-7 text-xs"
+                            onClick={() => actionAlert.mutate({ alertId: alert.id, action: 'actioned' })}>
+                            <CheckCircle className="w-3.5 h-3.5 mr-1" /> Done
+                          </Button>
+                          <Button size="sm" variant="ghost" className="h-7 text-xs"
+                            onClick={() => actionAlert.mutate({ alertId: alert.id, action: 'snoozed' })}>
+                            <Clock className="w-3.5 h-3.5 mr-1" /> Snooze
+                          </Button>
+                          <Button size="sm" variant="ghost" className="h-7 text-xs"
+                            onClick={() => actionAlert.mutate({ alertId: alert.id, action: 'dismissed' })}>
+                            <X className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               </div>
             );
           })}
+          {alerts.length === 0 && (
+            <div className="text-center py-12 text-sm text-[var(--color-ink)]/40">
+              <Bot className="w-12 h-12 mx-auto mb-3 opacity-20" />
+              No alerts — everything looks good!
+            </div>
+          )}
         </div>
       )}
 
+      {/* Ask AI */}
       {tab === 'ask' && (
-        <div className="bg-white rounded-xl border border-[#E5DDD3] overflow-hidden">
-          <div className="p-6 min-h-[400px] flex flex-col items-center justify-center text-center">
-            <Brain className="w-16 h-16 text-[var(--color-ai)]/20 mb-4" />
-            <h3 className="font-semibold text-lg mb-1">Ask anything about your operations</h3>
-            <p className="text-sm text-[var(--color-ink)]/50 max-w-md">
-              "Who hasn't submitted EOD today?", "How is the stock audit going?", "Show me overdue tasks in Accounts"
-            </p>
+        <div className="bg-white rounded-xl border border-[#E5DDD3] flex flex-col" style={{ height: 'calc(100vh - 280px)', minHeight: '400px' }}>
+          {/* Chat history */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {askHistory.length === 0 && (
+              <div className="text-center py-12">
+                <Bot className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                <p className="text-sm text-[var(--color-ink)]/40">Ask anything about your team's tasks, workload, or performance</p>
+                <div className="flex flex-wrap justify-center gap-2 mt-4">
+                  {['Who is overloaded?', 'What tasks are at risk?', "How's this week going?", 'Show overdue tasks'].map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => { setAskInput(q); }}
+                      className="px-3 py-1.5 bg-[var(--color-ivory)] rounded-full text-xs hover:bg-[#E5DDD3] transition-colors"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {askHistory.map((msg, i) => (
+              <div key={i} className={cn('flex', msg.role === 'user' ? 'justify-end' : 'justify-start')}>
+                <div className={cn(
+                  'max-w-[80%] px-4 py-2.5 rounded-2xl text-sm',
+                  msg.role === 'user'
+                    ? 'bg-[var(--color-maroon)] text-white rounded-br-sm'
+                    : 'bg-[var(--color-ivory)] rounded-bl-sm'
+                )}>
+                  {msg.text}
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="border-t border-[#E5DDD3] p-4 flex gap-2">
-            <input value={question} onChange={(e) => setQuestion(e.target.value)}
-              className="flex-1 px-4 py-2.5 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
-              placeholder="Ask the AI Manager..." />
-            <Button variant="ghost" size="icon"><Mic className="w-5 h-5" /></Button>
-            <Button size="icon" disabled={!question.trim()}><Send className="w-4 h-4" /></Button>
+
+          {/* Input */}
+          <div className="p-3 border-t border-[#E5DDD3]">
+            <div className="flex gap-2">
+              <input
+                value={askInput}
+                onChange={(e) => setAskInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAsk()}
+                className="flex-1 px-4 py-2 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+                placeholder="Ask your AI manager..."
+              />
+              <Button onClick={handleAsk} disabled={!askInput.trim()}>
+                <Send className="w-4 h-4" />
+              </Button>
+            </div>
           </div>
         </div>
       )}
 
+      {/* Digests */}
       {tab === 'digests' && (
-        <div className="bg-white rounded-xl border border-[#E5DDD3] p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <Clock className="w-5 h-5 text-[var(--color-ai)]" />
-            <h3 className="font-semibold">Today's Digest</h3>
-            <Button variant="ghost" size="sm" className="ml-auto"><Volume2 className="w-4 h-4" /> Listen</Button>
-          </div>
-          <div className="prose prose-sm text-[var(--color-ink)]/70">
-            <p><strong>Summary:</strong> 18 tasks completed today across 6 departments. 3 tasks are overdue. Accounts has the highest completion rate at 95%.</p>
-            <p><strong>Attention needed:</strong> Stock audit is falling behind schedule (45% done, 60% time elapsed). Cash count was delayed by 40 minutes.</p>
-            <p><strong>Highlights:</strong> Adil completed 5 creative deliverables this week — best individual performance.</p>
-          </div>
+        <div className="space-y-4">
+          {DEMO_DIGESTS.map((digest) => (
+            <div key={digest.id} className="bg-white rounded-xl border border-[#E5DDD3] p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <TrendingUp className="w-4 h-4 text-[var(--color-maroon)]" />
+                <h3 className="text-sm font-semibold">{digest.date}'s Digest</h3>
+                <button className="ml-auto flex items-center gap-1 text-xs text-[var(--color-maroon)] hover:underline">
+                  <Volume2 className="w-3.5 h-3.5" /> Listen in Malayalam
+                </button>
+              </div>
+              <p className="text-sm text-[var(--color-ink)]/70 mb-3">{digest.summary}</p>
+              <div className="space-y-1">
+                {digest.highlights.map((h, i) => (
+                  <div key={i} className="flex items-center gap-2 text-xs text-[var(--color-ink)]/50">
+                    <ChevronRight className="w-3 h-3 text-[var(--color-maroon)]" />
+                    {h}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
-

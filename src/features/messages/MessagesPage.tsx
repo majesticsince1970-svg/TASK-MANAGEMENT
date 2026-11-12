@@ -1,63 +1,96 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useAnnouncements, useAckAnnouncement } from '@/lib/hooks';
+import { useAuth } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { MessageSquare, Megaphone, Check, Eye } from 'lucide-react';
+import { MessageSquare, Check, Send, Plus, Megaphone } from 'lucide-react';
+import { formatDistanceToNow } from 'date-fns';
+
+type Tab = 'announcements' | 'comments';
+
+const DEMO_ANNOUNCEMENTS = [
+  { id: 'a1', title: 'Diwali schedule change', body: 'Shop will open at 8 AM from Nov 10-14. Please adjust your schedules accordingly.', requires_ack: true, created_at: new Date(Date.now() - 3600000 * 24).toISOString(), acks: [{ user_id: 'u1' }, { user_id: 'u2' }] },
+  { id: 'a2', title: 'New gold rate display procedure', body: 'Starting tomorrow, gold rate must be posted on Instagram AND WhatsApp status. Template attached.', requires_ack: true, created_at: new Date(Date.now() - 86400000 * 2).toISOString(), acks: [{ user_id: 'u1' }] },
+  { id: 'a3', title: 'Staff meeting — Friday 4 PM', body: 'Monthly review meeting. Please prepare your EOD summaries for the past 30 days.', requires_ack: false, created_at: new Date(Date.now() - 86400000 * 3).toISOString(), acks: [] },
+];
 
 export default function MessagesPage() {
-  const [tab, setTab] = useState<'announcements' | 'comments'>('announcements');
+  const { t } = useTranslation();
+  const { profile } = useAuth();
+  const [tab, setTab] = useState<Tab>('announcements');
+  const { data: remoteAnnouncements } = useAnnouncements();
+  const ackAnnouncement = useAckAnnouncement();
+
+  const announcements = (remoteAnnouncements && remoteAnnouncements.length > 0) ? remoteAnnouncements : DEMO_ANNOUNCEMENTS;
+
+  const hasAcked = (announcement: any) => {
+    return announcement.acks?.some((a: any) => a.user_id === profile?.id);
+  };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-4">
-      <h1 className="text-2xl font-bold">Messages</h1>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">{t('nav.messages')}</h1>
+        <Button size="sm"><Plus className="w-4 h-4" /> New Announcement</Button>
+      </div>
 
       <div className="flex gap-1">
-        <button onClick={() => setTab('announcements')} className={cn('px-4 py-2 text-sm rounded-lg', tab === 'announcements' ? 'bg-[var(--color-maroon)] text-white font-medium' : 'text-[var(--color-ink)]/60 hover:bg-[var(--color-ivory)]')}>
-          <Megaphone className="w-4 h-4 inline mr-1" /> Announcements
-        </button>
-        <button onClick={() => setTab('comments')} className={cn('px-4 py-2 text-sm rounded-lg', tab === 'comments' ? 'bg-[var(--color-maroon)] text-white font-medium' : 'text-[var(--color-ink)]/60 hover:bg-[var(--color-ivory)]')}>
-          <MessageSquare className="w-4 h-4 inline mr-1" /> Comments
-        </button>
+        {[
+          { key: 'announcements' as Tab, label: 'Announcements', icon: Megaphone },
+          { key: 'comments' as Tab, label: 'Comments', icon: MessageSquare },
+        ].map((tabItem) => (
+          <button
+            key={tabItem.key}
+            onClick={() => setTab(tabItem.key)}
+            className={cn(
+              'flex items-center gap-1.5 px-4 py-2 text-sm rounded-lg transition-colors',
+              tab === tabItem.key
+                ? 'bg-[var(--color-maroon)] text-white font-medium'
+                : 'text-[var(--color-ink)]/60 hover:bg-[var(--color-ivory)]'
+            )}
+          >
+            <tabItem.icon className="w-4 h-4" /> {tabItem.label}
+          </button>
+        ))}
       </div>
 
       {tab === 'announcements' && (
         <div className="space-y-3">
-          <div className="bg-white rounded-xl border border-[#E5DDD3] p-5">
-            <div className="flex items-start justify-between mb-2">
-              <h3 className="font-semibold">Diwali Office Timings</h3>
-              <span className="text-xs text-[var(--color-ink)]/40">2 hours ago</span>
-            </div>
-            <p className="text-sm text-[var(--color-ink)]/70 mb-3">The shop will close at 6 PM on Diwali (1 Nov). Regular hours resume on 3 Nov. All staff should complete pending tasks before 5 PM.</p>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1 text-xs text-[var(--color-ink)]/40">
-                <Eye className="w-3 h-3" /> 85% read (17/20)
+          {announcements.map((ann: any) => (
+            <div key={ann.id} className="bg-white rounded-xl border border-[#E5DDD3] p-4">
+              <div className="flex items-start justify-between mb-2">
+                <h3 className="font-semibold">{ann.title}</h3>
+                <span className="text-[10px] text-[var(--color-ink)]/30 shrink-0">
+                  {formatDistanceToNow(new Date(ann.created_at), { addSuffix: true })}
+                </span>
               </div>
-              <Button variant="outline" size="sm"><Check className="w-4 h-4" /> I have read this</Button>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-xl border border-[#E5DDD3] p-5">
-            <div className="flex items-start justify-between mb-2">
-              <h3 className="font-semibold">New Packaging Guidelines</h3>
-              <span className="text-xs text-[var(--color-ink)]/40">Yesterday</span>
-            </div>
-            <p className="text-sm text-[var(--color-ink)]/70 mb-3">Please use the new branded boxes for all items above ₹50,000. The old boxes should be used up for smaller items.</p>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1 text-xs text-[var(--color-success)]">
-                <Check className="w-3 h-3" /> You acknowledged this
+              <p className="text-sm text-[var(--color-ink)]/70 mb-3">{ann.body}</p>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-[var(--color-ink)]/30">
+                  {ann.acks?.length || 0} read
+                </span>
+                {ann.requires_ack && !hasAcked(ann) ? (
+                  <Button size="sm" variant="outline" onClick={() => ackAnnouncement.mutate(ann.id)}>
+                    <Check className="w-4 h-4 mr-1" /> I have read this
+                  </Button>
+                ) : ann.requires_ack ? (
+                  <span className="text-xs text-green-600 flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" /> Read
+                  </span>
+                ) : null}
               </div>
-              <span className="text-xs text-[var(--color-ink)]/40">100% read</span>
             </div>
-          </div>
+          ))}
         </div>
       )}
 
       {tab === 'comments' && (
-        <div className="bg-white rounded-xl border border-[#E5DDD3] p-6 text-center">
-          <MessageSquare className="w-12 h-12 mx-auto mb-3 text-[var(--color-ink)]/20" />
-          <p className="text-sm text-[var(--color-ink)]/40">Comments with @mentions will appear here</p>
+        <div className="text-center py-12 text-sm text-[var(--color-ink)]/40">
+          <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-20" />
+          Task comments will appear here
         </div>
       )}
     </div>
   );
 }
-

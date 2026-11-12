@@ -2,10 +2,18 @@ import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 import { MobileNav } from './MobileNav';
+import { PinnedNote } from '@/components/PinnedNote';
+import { OfflineBanner } from '@/components/OfflineBanner';
+import { useKeyboardShortcuts } from '@/lib/keyboard';
 
 export function AppLayout() {
+  useKeyboardShortcuts();
+
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--color-ivory)]">
+      {/* Offline indicator */}
+      <OfflineBanner />
+
       {/* Desktop sidebar */}
       <Sidebar />
 
@@ -19,6 +27,9 @@ export function AppLayout() {
 
       {/* Mobile bottom nav */}
       <MobileNav />
+
+      {/* Floating pinned note */}
+      <PinnedNote />
     </div>
   );
 }

@@ -1,46 +1,114 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useEodReport, useSaveEod } from '@/lib/hooks';
+import { useTasks } from '@/features/tasks/hooks';
 import { Button } from '@/components/ui/button';
-import { Clock, CheckCircle2, Send } from 'lucide-react';
+import { Send, Loader2, CheckCircle } from 'lucide-react';
+import { format } from 'date-fns';
 
 export default function EODPage() {
-  const [blockers, setBlockers] = useState('');
-  const [tomorrowPlan, setTomorrowPlan] = useState('');
+  const { t } = useTranslation();
+  const today = format(new Date(), 'yyyy-MM-dd');
+  const { data: existingReport } = useEodReport(today);
+  const saveEod = useSaveEod();
+  const { data: todayTasks = [] } = useTasks({ tab: 'my' });
+
+  const completedToday = todayTasks.filter((t: any) => t.status === 'done' && t.completed_at && format(new Date(t.completed_at), 'yyyy-MM-dd') === today);
+
+  const [summary, setSummary] = useState(existingReport?.completed_summary || '');
+  const [blockers, setBlockers] = useState(existingReport?.blockers || '');
+  const [plan, setPlan] = useState(existingReport?.tomorrow_plan || '');
+  const [submitted, setSubmitted] = useState(!!existingReport?.submitted_at);
+
+  // Pre-fill summary from completed tasks
+  const prefillSummary = completedToday.map((t: any) => `✓ ${t.title}`).join('\n');
+
+  const handleSubmit = () => {
+    saveEod.mutate({
+      date: today,
+      summary: summary || prefillSummary,
+      blockers,
+      plan,
+    }, {
+      onSuccess: () => setSubmitted(true),
+    });
+  };
+
+  if (submitted) {
+    return (
+      <div className="max-w-xl mx-auto text-center py-20">
+        <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
+        <h2 className="text-xl font-semibold mb-2">EOD Report Submitted</h2>
+        <p className="text-sm text-[var(--color-ink)]/50">
+          {format(new Date(), 'EEEE, dd MMMM yyyy')}
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
-      <h1 className="text-2xl font-bold">End of Day Report</h1>
-
-      <div className="bg-white rounded-xl border border-[#E5DDD3] p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <CheckCircle2 className="w-5 h-5 text-[var(--color-success)]" />
-          <h3 className="font-semibold">Today's Completed Tasks</h3>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-success)]/10 text-[var(--color-success)]">Pre-filled</span>
-        </div>
-        <div className="space-y-2">
-          {['Morning cash & safe count (₹4,82,300)', 'Gold rate post uploaded', 'Vendor payment entries — 5 entries'].map((t, i) => (
-            <div key={i} className="flex items-center gap-2 text-sm text-[var(--color-ink)]/70">
-              <CheckCircle2 className="w-4 h-4 text-[var(--color-success)] shrink-0" /> {t}
-            </div>
-          ))}
-        </div>
+    <div className="max-w-xl mx-auto space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">End of Day Report</h1>
+        <p className="text-sm text-[var(--color-ink)]/50 mt-1">
+          {format(new Date(), 'EEEE, dd MMMM yyyy')}
+        </p>
       </div>
 
-      <div className="bg-white rounded-xl border border-[#E5DDD3] p-5 space-y-4">
-        <div>
-          <label className="block text-sm font-semibold mb-1.5">Blockers / Issues</label>
-          <textarea value={blockers} onChange={(e) => setBlockers(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm min-h-[80px] resize-none"
-            placeholder="Any issues that slowed you down today..." />
+      <div className="bg-white rounded-2xl border border-[#E5DDD3] overflow-hidden">
+        <div className="p-6 space-y-5">
+          {/* What I completed */}
+          <div>
+            <label className="block text-sm font-semibold mb-2">What I completed today</label>
+            {completedToday.length > 0 && (
+              <div className="mb-2 p-3 bg-green-50 rounded-lg">
+                <p className="text-xs text-green-700 font-medium mb-1">Auto-detected ({completedToday.length} tasks):</p>
+                {completedToday.map((t: any) => (
+                  <p key={t.id} className="text-xs text-green-600">✓ {t.title}</p>
+                ))}
+              </div>
+            )}
+            <textarea
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm resize-none"
+              rows={4}
+              placeholder={prefillSummary || "What did you accomplish today?"}
+            />
+          </div>
+
+          {/* Blockers */}
+          <div>
+            <label className="block text-sm font-semibold mb-2">Blockers or issues</label>
+            <textarea
+              value={blockers}
+              onChange={(e) => setBlockers(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm resize-none"
+              rows={2}
+              placeholder="Any blockers? (optional)"
+            />
+          </div>
+
+          {/* Tomorrow's plan */}
+          <div>
+            <label className="block text-sm font-semibold mb-2">Plan for tomorrow</label>
+            <textarea
+              value={plan}
+              onChange={(e) => setPlan(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm resize-none"
+              rows={3}
+              placeholder="What will you work on tomorrow?"
+            />
+          </div>
         </div>
-        <div>
-          <label className="block text-sm font-semibold mb-1.5">Tomorrow's Plan</label>
-          <textarea value={tomorrowPlan} onChange={(e) => setTomorrowPlan(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm min-h-[80px] resize-none"
-            placeholder="What do you plan to work on tomorrow..." />
+
+        <div className="px-6 py-4 border-t border-[#E5DDD3] bg-[var(--color-ivory)] flex justify-end">
+          <Button onClick={handleSubmit} disabled={saveEod.isPending}>
+            {saveEod.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Send className="w-4 h-4 mr-1" />}
+            Submit Report
+          </Button>
         </div>
-        <Button className="w-full"><Send className="w-4 h-4" /> Submit EOD Report</Button>
       </div>
     </div>
   );
 }
-

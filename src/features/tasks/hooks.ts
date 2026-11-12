@@ -11,6 +11,7 @@ interface TaskFilters {
   status?: TaskStatus[];
   timing_type?: TimingType[];
   department_id?: string;
+  assignee?: string;
   overdue?: boolean;
   search?: string;
 }
@@ -48,6 +49,10 @@ export function useTasks(filters: TaskFilters = {}) {
 
       if (filters.search) {
         query = query.ilike('title', `%${filters.search}%`);
+      }
+
+      if (filters.assignee) {
+        query = query.eq('owner_id', filters.assignee);
       }
 
       const { data, error } = await query.limit(100);
@@ -393,3 +398,4 @@ export function useAddComment() {
     },
   });
 }
+

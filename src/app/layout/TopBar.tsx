@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import type { AvailabilityStatus } from '@/types/database';
+import { useUnreadCount, useUpdateAvailability } from '@/lib/hooks';
 
 const AVAILABILITY_OPTIONS: { value: AvailabilityStatus; labelKey: string; color: string }[] = [
   { value: 'on_duty', labelKey: 'availability.on_duty', color: 'bg-green-500' },
@@ -23,6 +24,8 @@ export function TopBar() {
   const navigate = useNavigate();
   const [showAvailability, setShowAvailability] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const { data: unreadCount = 0 } = useUnreadCount();
+  const updateAvailability = useUpdateAvailability();
 
   const currentAvailability = AVAILABILITY_OPTIONS.find(
     (a) => a.value === (profile?.availability || 'on_duty')
@@ -71,7 +74,11 @@ export function TopBar() {
         {/* Notifications */}
         <Button variant="ghost" size="icon" onClick={() => navigate('/notifications')} className="relative">
           <Bell className="w-[18px] h-[18px]" />
-          <span className="absolute top-1 right-1 w-2 h-2 bg-[var(--color-urgent)] rounded-full" />
+          {unreadCount > 0 && (
+            <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 px-1 bg-[var(--color-urgent)] text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+              {unreadCount > 99 ? '99+' : unreadCount}
+            </span>
+          )}
         </Button>
 
         {/* Availability */}
@@ -92,7 +99,10 @@ export function TopBar() {
                   <button
                     key={opt.value}
                     className="flex items-center gap-2 w-full px-3 py-2 text-sm hover:bg-[var(--color-ivory)] transition-colors"
-                    onClick={() => setShowAvailability(false)}
+                    onClick={() => {
+                      updateAvailability.mutate({ availability: opt.value });
+                      setShowAvailability(false);
+                    }}
                   >
                     <span className={cn('w-2.5 h-2.5 rounded-full', opt.color)} />
                     {t(opt.labelKey)}

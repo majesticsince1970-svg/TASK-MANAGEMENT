@@ -1,68 +1,84 @@
-import { Radio, RefreshCw } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { usePeople } from '@/lib/hooks';
 import { cn } from '@/lib/utils';
+import { AvailabilityDot } from '@/components/AvailabilityDot';
+import { Clock, CheckCircle, Activity, Monitor, Wifi, WifiOff } from 'lucide-react';
+import type { Profile, AvailabilityStatus } from '@/types/database';
 
-const PEOPLE = [
-  { id: '1', name: 'James Sheary', role: 'Accounts Head', availability: 'on_duty', task: 'Payments due list', timer: '1h 23m', doneToday: 3, total: 6, overdue: 1 },
-  { id: '2', name: 'Adil', role: 'Creative', availability: 'on_duty', task: 'Diwali reel edit', timer: '45m', doneToday: 2, total: 4, overdue: 0 },
-  { id: '3', name: 'Jelisha', role: 'Creative', availability: 'with_customer', task: null, timer: null, doneToday: 1, total: 3, overdue: 0 },
-  { id: '4', name: 'Abdul Latif', role: 'Director', availability: 'on_duty', task: null, timer: null, doneToday: 0, total: 1, overdue: 0 },
-  { id: '5', name: 'Ahmed', role: 'Director', availability: 'on_break', task: null, timer: null, doneToday: 0, total: 0, overdue: 0 },
-  { id: '6', name: 'Ravi Kumar', role: 'Sales', availability: 'on_duty', task: 'Opening tray count', timer: '12m', doneToday: 4, total: 5, overdue: 0 },
+const DEMO_PEOPLE: Partial<Profile>[] = [
+  { id: '1', full_name: 'James Sheary', availability: 'on_duty', job_title: 'Sales Manager' },
+  { id: '2', full_name: 'Jelisha', availability: 'on_duty', job_title: 'Accounts Head' },
+  { id: '3', full_name: 'Adil', availability: 'with_customer', job_title: 'Social Media' },
+  { id: '4', full_name: 'Simi', availability: 'on_break', job_title: 'Workshop Lead' },
+  { id: '5', full_name: 'Rajan', availability: 'on_duty', job_title: 'Sales' },
+  { id: '6', full_name: 'Priya', availability: 'off_shift', job_title: 'Design' },
 ];
 
-const dotColor: Record<string, string> = {
-  on_duty: 'bg-green-500', on_break: 'bg-yellow-500', with_customer: 'bg-blue-500', on_leave: 'bg-red-500', off_shift: 'bg-gray-400',
-};
-
 export default function LiveBoardPage() {
+  const { t } = useTranslation();
+  const { data: remotePeople } = usePeople();
+
+  const people = (remotePeople && remotePeople.length > 0) ? remotePeople : DEMO_PEOPLE;
+
   return (
-    <div className="max-w-5xl mx-auto space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Radio className="w-5 h-5 text-[var(--color-urgent)] animate-pulse" />
-          <h1 className="text-2xl font-bold">Live Board</h1>
-          <span className="text-xs text-[var(--color-ink)]/40">Auto-refreshing</span>
-        </div>
-        <Button variant="ghost" size="sm"><RefreshCw className="w-4 h-4" /> Refresh</Button>
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+        <h1 className="text-2xl font-bold">{t('nav.live')}</h1>
+        <span className="text-xs text-[var(--color-ink)]/30">Real-time</span>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {PEOPLE.map((p) => (
-          <div key={p.id} className="bg-white rounded-xl border border-[#E5DDD3] p-4 hover:shadow-sm cursor-pointer">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="relative">
-                <div className="w-10 h-10 rounded-full bg-[var(--color-maroon)]/10 flex items-center justify-center text-sm font-semibold text-[var(--color-maroon)]">
-                  {p.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {people.map((person: any) => {
+          const isOnline = ['on_duty', 'on_break', 'with_customer'].includes(person.availability);
+          const demoTaskCount = Math.floor(Math.random() * 5) + 1;
+          const demoDoneCount = Math.floor(Math.random() * 4);
+
+          return (
+            <div key={person.id} className={cn(
+              'bg-white rounded-xl border border-[#E5DDD3] p-4 transition-all',
+              !isOnline && 'opacity-50'
+            )}>
+              <div className="flex items-start gap-3">
+                <div className="relative">
+                  <div className="w-12 h-12 rounded-full bg-[var(--color-maroon)]/10 flex items-center justify-center text-sm font-bold text-[var(--color-maroon)]">
+                    {person.full_name?.split(' ').map((n: string) => n[0]).join('').slice(0, 2)}
+                  </div>
+                  <AvailabilityDot status={person.availability} className="absolute -bottom-0.5 -right-0.5 w-4 h-4 border-2 border-white" />
                 </div>
-                <div className={cn('absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white', dotColor[p.availability])} />
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-medium truncate">{person.full_name}</h3>
+                  <p className="text-xs text-[var(--color-ink)]/40">{person.job_title || 'Staff'}</p>
+                  <div className="flex items-center gap-3 mt-2 text-xs text-[var(--color-ink)]/50">
+                    <span className="flex items-center gap-1">
+                      <Activity className="w-3 h-3" /> {demoTaskCount} active
+                    </span>
+                    <span className="flex items-center gap-1 text-green-600">
+                      <CheckCircle className="w-3 h-3" /> {demoDoneCount} done
+                    </span>
+                  </div>
+                </div>
+                <div className="shrink-0">
+                  {isOnline ? (
+                    <Wifi className="w-4 h-4 text-green-500" />
+                  ) : (
+                    <WifiOff className="w-4 h-4 text-gray-300" />
+                  )}
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="font-medium text-sm truncate">{p.name}</p>
-                <p className="text-xs text-[var(--color-ink)]/40">{p.role}</p>
-              </div>
-            </div>
 
-            {p.task ? (
-              <div className="bg-[var(--color-ivory)] rounded-lg px-3 py-2 mb-3">
-                <p className="text-xs text-[var(--color-ink)]/50">Working on</p>
-                <p className="text-sm font-medium truncate">{p.task}</p>
-                {p.timer && <p className="text-xs text-[var(--color-maroon)] font-mono mt-0.5">⏱ {p.timer}</p>}
-              </div>
-            ) : (
-              <div className="bg-[var(--color-ivory)] rounded-lg px-3 py-2 mb-3 text-xs text-[var(--color-ink)]/30">
-                No active task
-              </div>
-            )}
-
-            <div className="flex justify-between text-xs text-[var(--color-ink)]/50">
-              <span className="text-[var(--color-success)]">✓ {p.doneToday}/{p.total} today</span>
-              {p.overdue > 0 && <span className="text-[var(--color-urgent)]">⚠ {p.overdue} overdue</span>}
+              {/* Current task */}
+              {isOnline && (
+                <div className="mt-3 px-3 py-2 bg-[var(--color-ivory)] rounded-lg text-xs">
+                  <span className="text-[var(--color-ink)]/40">Working on: </span>
+                  <span className="font-medium">Current task #{Math.floor(Math.random() * 100)}</span>
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
-

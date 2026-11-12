@@ -3,6 +3,7 @@ import { useEffect, type ReactNode } from 'react';
 import '@/i18n';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
+import { useRealtimeInvalidation } from '@/lib/realtime';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -47,6 +48,7 @@ function AuthListener({ children }: { children: ReactNode }) {
     return () => subscription.unsubscribe();
   }, [setUser, setLoading, fetchProfile]);
 
+  useRealtimeInvalidation();
   return <>{children}</>;
 }
 

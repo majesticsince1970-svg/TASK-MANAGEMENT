@@ -27,6 +27,7 @@ const SettingsPage = lazy(() => import('@/features/settings/SettingsPage'));
 const MyProfilePage = lazy(() => import('@/features/auth/MyProfilePage'));
 const TVModePage = lazy(() => import('@/features/dashboard/TVModePage'));
 const VoiceTaskPage = lazy(() => import('@/features/voice/VoiceTaskPage'));
+const TaskListenPage = lazy(() => import('@/features/tasks/TaskListenPage'));
 
 /* ─── Loading fallback ─── */
 function PageSkeleton() {
@@ -110,6 +111,7 @@ export const router = createBrowserRouter([
           { path: '/', element: <HomePage /> },
           { path: '/tasks', element: <TasksPage /> },
           { path: '/tasks/new', element: <CreateTaskPage /> },
+          { path: '/tasks/:id/listen', element: <TaskListenPage /> },
           { path: '/approvals', element: <ApprovalsPage /> },
           { path: '/routines', element: <RoutinesPage /> },
           { path: '/templates', element: <TemplatesPage /> },

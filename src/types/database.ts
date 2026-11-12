@@ -130,6 +130,296 @@ export interface AppSettings {
   updated_at: string;
 }
 
+/* ─── New interfaces from migration 00001 ─── */
+
+export interface TaskEvent {
+  id: string;
+  task_id: string;
+  actor_id: string | null;
+  type: EventType;
+  from_status: TaskStatus | null;
+  to_status: TaskStatus | null;
+  note: string | null;
+  meta: Record<string, unknown>;
+  at: string;
+}
+
+export interface TaskChecklistItem {
+  id: string;
+  task_id: string;
+  position: number;
+  text: string;
+  text_ml: string | null;
+  requires_photo: boolean;
+  done: boolean;
+  done_by: string | null;
+  done_at: string | null;
+  photo_path: string | null;
+  created_at: string;
+}
+
+export interface Milestone {
+  id: string;
+  task_id: string;
+  title: string;
+  due_at: string | null;
+  owner_id: string | null;
+  done: boolean;
+  done_at: string | null;
+  proof_path: string | null;
+  position: number;
+  created_at: string;
+}
+
+export interface ProofData {
+  id: string;
+  task_id: string;
+  kind: ProofType;
+  storage_path: string | null;
+  value_numeric: number | null;
+  value_text: string | null;
+  rows: unknown[] | null;
+  check_passed: boolean | null;
+  check_message: string | null;
+  ai_check: Record<string, unknown> | null;
+  submitted_by: string | null;
+  created_at: string;
+}
+
+export interface DateChangeRequest {
+  id: string;
+  task_id: string;
+  requested_by: string;
+  old_due_at: string | null;
+  new_due_at: string;
+  reason: string;
+  status: RequestStatus;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  created_at: string;
+}
+
+export interface Comment {
+  id: string;
+  task_id: string;
+  author_id: string;
+  body: string;
+  voice_path: string | null;
+  mentions: string[];
+  created_at: string;
+}
+
+export interface Notification {
+  id: string;
+  user_id: string;
+  task_id: string | null;
+  type: string;
+  title: string;
+  title_ml: string | null;
+  body: string | null;
+  body_ml: string | null;
+  level: 'info' | 'reminder' | 'alert' | 'urgent';
+  action_url: string | null;
+  channels: NotifChannel[];
+  delivered_at: string | null;
+  read_at: string | null;
+  held_until: string | null;
+  dedupe_key: string | null;
+  created_at: string;
+}
+
+export interface AIAlert {
+  id: string;
+  level: AlertLevel;
+  title: string;
+  explanation: string | null;
+  evidence: Record<string, unknown>;
+  suggested_action: string | null;
+  suggested_assignee_id: string | null;
+  department_id: string | null;
+  status: 'open' | 'actioned' | 'snoozed' | 'dismissed';
+  snoozed_until: string | null;
+  source: 'rule' | 'ai';
+  rule_key: string | null;
+  dedupe_key: string | null;
+  created_for: string | null;
+  created_at: string;
+}
+
+export interface Announcement {
+  id: string;
+  title: string;
+  body: string;
+  body_ml: string | null;
+  audience: Record<string, unknown>;
+  requires_ack: boolean;
+  created_by: string;
+  created_at: string;
+}
+
+export interface AnnouncementAck {
+  id: string;
+  announcement_id: string;
+  user_id: string;
+  acked_at: string;
+}
+
+export interface EodReport {
+  id: string;
+  user_id: string;
+  report_date: string;
+  completed_summary: string | null;
+  blockers: string | null;
+  tomorrow_plan: string | null;
+  ai_prefill: Record<string, unknown> | null;
+  submitted_at: string | null;
+  created_at: string;
+}
+
+export interface PushSubscription {
+  id: string;
+  user_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  device_label: string | null;
+  last_seen_at: string | null;
+  created_at: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  actor_id: string | null;
+  action: string;
+  entity: string;
+  entity_id: string | null;
+  meta: Record<string, unknown>;
+  at: string;
+}
+
+/* ─── New interfaces from migration 00002 ─── */
+
+export interface TaskTemplate {
+  id: string;
+  title: string;
+  title_ml: string | null;
+  description: string | null;
+  department_id: string | null;
+  timing_type: TimingType;
+  proof_type: ProofType;
+  proof_rule: Record<string, unknown> | null;
+  importance: Importance;
+  requires_approval: boolean;
+  checklist_items: unknown[];
+  created_by: string;
+  is_global: boolean;
+  use_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Routine {
+  id: string;
+  title: string;
+  title_ml: string | null;
+  description: string | null;
+  template_id: string | null;
+  department_id: string | null;
+  assignee_id: string | null;
+  assignee_rule: 'fixed' | 'rotate' | 'pool';
+  rotate_list: string[];
+  rotate_index: number;
+  timing_type: TimingType;
+  proof_type: ProofType;
+  importance: Importance;
+  schedule_cron: string;
+  schedule_description: string | null;
+  due_offset_hours: number;
+  skip_holidays: boolean;
+  is_active: boolean;
+  compliance_percent: number;
+  last_generated_at: string | null;
+  next_run_at: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChainStep {
+  title: string;
+  timing_type: TimingType;
+  assignee_id: string | null;
+  department_id: string | null;
+  proof_type: ProofType;
+  importance: Importance;
+}
+
+export interface Chain {
+  id: string;
+  title: string;
+  title_ml: string | null;
+  description: string | null;
+  steps: ChainStep[];
+  created_by: string;
+  use_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChainRun {
+  id: string;
+  chain_id: string;
+  current_step: number;
+  status: 'running' | 'completed' | 'cancelled';
+  started_by: string;
+  created_at: string;
+}
+
+export interface ActivitySession {
+  id: string;
+  user_id: string;
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  is_active: boolean;
+  last_heartbeat_at: string;
+  current_page: string | null;
+}
+
+export interface AIUsage {
+  id: string;
+  function_name: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number | null;
+  triggered_by: string | null;
+  created_at: string;
+}
+
+export interface ReminderRule {
+  id: string;
+  name: string;
+  timing_type: TimingType | null;
+  trigger_minutes_before: number;
+  channel: NotifChannel;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface AIRule {
+  id: string;
+  rule_key: string;
+  title: string;
+  description: string | null;
+  sql_template: string;
+  alert_level: AlertLevel;
+  is_active: boolean;
+  last_run_at: string | null;
+  created_at: string;
+}
+
 // Supabase generated types placeholder
 export interface Database {
   public: {
@@ -164,6 +454,111 @@ export interface Database {
         Insert: Partial<AppSettings>;
         Update: Partial<AppSettings>;
       };
+      task_events: {
+        Row: TaskEvent;
+        Insert: Partial<TaskEvent> & { task_id: string; type: EventType };
+        Update: Partial<TaskEvent>;
+      };
+      task_checklist_items: {
+        Row: TaskChecklistItem;
+        Insert: Partial<TaskChecklistItem> & { task_id: string; text: string };
+        Update: Partial<TaskChecklistItem>;
+      };
+      milestones: {
+        Row: Milestone;
+        Insert: Partial<Milestone> & { task_id: string; title: string };
+        Update: Partial<Milestone>;
+      };
+      proofs: {
+        Row: ProofData;
+        Insert: Partial<ProofData> & { task_id: string; kind: ProofType };
+        Update: Partial<ProofData>;
+      };
+      date_change_requests: {
+        Row: DateChangeRequest;
+        Insert: Partial<DateChangeRequest> & { task_id: string; requested_by: string; new_due_at: string; reason: string };
+        Update: Partial<DateChangeRequest>;
+      };
+      comments: {
+        Row: Comment;
+        Insert: Partial<Comment> & { task_id: string; author_id: string; body: string };
+        Update: Partial<Comment>;
+      };
+      notifications: {
+        Row: Notification;
+        Insert: Partial<Notification> & { user_id: string; type: string; title: string };
+        Update: Partial<Notification>;
+      };
+      push_subscriptions: {
+        Row: PushSubscription;
+        Insert: Partial<PushSubscription> & { user_id: string; endpoint: string; p256dh: string; auth: string };
+        Update: Partial<PushSubscription>;
+      };
+      ai_alerts: {
+        Row: AIAlert;
+        Insert: Partial<AIAlert> & { level: AlertLevel; title: string };
+        Update: Partial<AIAlert>;
+      };
+      announcements: {
+        Row: Announcement;
+        Insert: Partial<Announcement> & { title: string; body: string; created_by: string };
+        Update: Partial<Announcement>;
+      };
+      announcement_acks: {
+        Row: AnnouncementAck;
+        Insert: Partial<AnnouncementAck> & { announcement_id: string; user_id: string };
+        Update: Partial<AnnouncementAck>;
+      };
+      eod_reports: {
+        Row: EodReport;
+        Insert: Partial<EodReport> & { user_id: string; report_date: string };
+        Update: Partial<EodReport>;
+      };
+      audit_log: {
+        Row: AuditLogEntry;
+        Insert: Partial<AuditLogEntry> & { action: string; entity: string };
+        Update: Partial<AuditLogEntry>;
+      };
+      task_templates: {
+        Row: TaskTemplate;
+        Insert: Partial<TaskTemplate> & { title: string; created_by: string };
+        Update: Partial<TaskTemplate>;
+      };
+      routines: {
+        Row: Routine;
+        Insert: Partial<Routine> & { title: string; created_by: string };
+        Update: Partial<Routine>;
+      };
+      chains: {
+        Row: Chain;
+        Insert: Partial<Chain> & { title: string; created_by: string };
+        Update: Partial<Chain>;
+      };
+      chain_runs: {
+        Row: ChainRun;
+        Insert: Partial<ChainRun> & { chain_id: string; started_by: string };
+        Update: Partial<ChainRun>;
+      };
+      activity_sessions: {
+        Row: ActivitySession;
+        Insert: Partial<ActivitySession> & { user_id: string };
+        Update: Partial<ActivitySession>;
+      };
+      ai_usage: {
+        Row: AIUsage;
+        Insert: Partial<AIUsage> & { function_name: string };
+        Update: Partial<AIUsage>;
+      };
+      reminder_rules: {
+        Row: ReminderRule;
+        Insert: Partial<ReminderRule> & { name: string };
+        Update: Partial<ReminderRule>;
+      };
+      ai_rules: {
+        Row: AIRule;
+        Insert: Partial<AIRule> & { rule_key: string; title: string; sql_template: string };
+        Update: Partial<AIRule>;
+      };
     };
     Functions: Record<string, unknown>;
     Enums: {
@@ -181,4 +576,3 @@ export interface Database {
     };
   };
 }
-

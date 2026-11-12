@@ -1,22 +1,49 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import type { TimingType, ProofType } from '@/types/database';
+import { useCreateTask } from '@/features/tasks/hooks';
+import { supabase } from '@/lib/supabase';
+import type { TimingType, ProofType, Profile, Department } from '@/types/database';
 import {
-  Zap, Calendar, Mountain, RotateCcw, Repeat, Star,
+  Zap, Calendar, Mountain, RotateCcw, Star,
   Camera, FileText, Video, Hash, CheckSquare, Pen,
   Link2, CreditCard, AlignLeft, X, Users, User,
-  Building, Globe, ArrowLeft, Mic, Save
+  Building, Globe, ArrowLeft, Save, Loader2, Plus, Trash2
 } from 'lucide-react';
+import { addDays, endOfMonth, nextSaturday, format, setHours, setMinutes } from 'date-fns';
+import { useQuery } from '@tanstack/react-query';
+import { queryKeys } from '@/lib/queryKeys';
+
+const taskSchema = z.object({
+  title: z.string().min(3, 'Title must be at least 3 characters'),
+  description: z.string().optional(),
+  assignTarget: z.enum(['person', 'department', 'pool']),
+  ownerId: z.string().optional(),
+  departmentId: z.string().optional(),
+  timingType: z.enum(['urgent', 'dated', 'long', 'flexible'] as const),
+  dueDate: z.string().optional(),
+  dueTime: z.string().optional(),
+  reviewOn: z.string().optional(),
+  importance: z.enum(['normal', 'important'] as const),
+  proofType: z.enum(['none', 'photo', 'file', 'video', 'number', 'checklist', 'signature', 'link', 'payment_list', 'text_note'] as const),
+  requiresApproval: z.boolean(),
+  approverId: z.string().optional(),
+  readAloud: z.boolean(),
+  checklistItems: z.array(z.object({ text: z.string(), requires_photo: z.boolean() })).optional(),
+});
+
+type TaskFormValues = z.infer<typeof taskSchema>;
 
 const TIMING_OPTIONS: { type: TimingType; label: string; labelMl: string; icon: React.ElementType; color: string; desc: string }[] = [
   { type: 'urgent', label: 'Urgent', labelMl: 'അടിയന്തരം', icon: Zap, color: '#C62828', desc: 'Due today, ≤12h' },
   { type: 'dated', label: 'Dated', labelMl: 'തീയതിയുള്ളത്', icon: Calendar, color: '#B8862B', desc: 'Due within 30 days' },
   { type: 'long', label: 'Long task', labelMl: 'വലിയ ജോലി', icon: Mountain, color: '#7A1F2B', desc: '7-92 days, milestones' },
   { type: 'flexible', label: 'Flexible', labelMl: 'സമയപരിധിയില്ല', icon: RotateCcw, color: '#8A7A72', desc: 'No deadline, review date' },
-  { type: 'repeating', label: 'Repeating', labelMl: 'ദിനചര്യ', icon: Repeat, color: '#5B3FBF', desc: 'From routines only' },
 ];
 
 const PROOF_OPTIONS: { type: ProofType; label: string; icon: React.ElementType }[] = [
@@ -32,16 +59,103 @@ const PROOF_OPTIONS: { type: ProofType; label: string; icon: React.ElementType }
   { type: 'text_note', label: 'Text Note', icon: AlignLeft },
 ];
 
-const DATE_CHIPS = ['Today', 'Tomorrow', 'This Saturday', 'End of Month'];
+function usePeople() {
+  return useQuery({
+    queryKey: queryKeys.profiles(),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('profiles').select('*').eq('is_active', true).order('full_name');
+      if (error) throw error;
+      return (data || []) as Profile[];
+    },
+  });
+}
+
+function useDepartments() {
+  return useQuery({
+    queryKey: queryKeys.departments(),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('departments').select('*').order('sort_order');
+      if (error) throw error;
+      return (data || []) as Department[];
+    },
+  });
+}
 
 export default function CreateTaskPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const [title, setTitle] = useState('');
-  const [timingType, setTimingType] = useState<TimingType>('dated');
-  const [proofType, setProofType] = useState<ProofType>('none');
-  const [importance, setImportance] = useState<'normal' | 'important'>('normal');
-  const [assignTarget, setAssignTarget] = useState<'person' | 'department' | 'pool'>('person');
+  const createTask = useCreateTask();
+  const { data: people = [] } = usePeople();
+  const { data: departments = [] } = useDepartments();
+  const [personSearch, setPersonSearch] = useState('');
+  const [showPersonDropdown, setShowPersonDropdown] = useState(false);
+  const [checklistItems, setChecklistItems] = useState<{ text: string; requires_photo: boolean }[]>([]);
+
+  const { control, handleSubmit, watch, setValue, formState: { errors, isValid } } = useForm<TaskFormValues>({
+    resolver: zodResolver(taskSchema),
+    defaultValues: {
+      title: '',
+      description: '',
+      assignTarget: 'person',
+      timingType: 'dated',
+      importance: 'normal',
+      proofType: 'none',
+      requiresApproval: true,
+      readAloud: false,
+      checklistItems: [],
+    },
+    mode: 'onChange',
+  });
+
+  const timingType = watch('timingType');
+  const assignTarget = watch('assignTarget');
+  const proofType = watch('proofType');
+  const selectedOwnerId = watch('ownerId');
+
+  const filteredPeople = people.filter((p) =>
+    p.full_name.toLowerCase().includes(personSearch.toLowerCase()) ||
+    (p.full_name_ml && p.full_name_ml.includes(personSearch))
+  );
+
+  const selectedPerson = people.find((p) => p.id === selectedOwnerId);
+
+  const getDateChips = () => {
+    const now = new Date();
+    return [
+      { label: 'Today 5 PM', date: format(setMinutes(setHours(now, 17), 0), "yyyy-MM-dd"), time: '17:00' },
+      { label: 'Tomorrow', date: format(addDays(now, 1), "yyyy-MM-dd"), time: '17:00' },
+      { label: 'This Saturday', date: format(nextSaturday(now), "yyyy-MM-dd"), time: '18:00' },
+      { label: 'End of Month', date: format(endOfMonth(now), "yyyy-MM-dd"), time: '21:00' },
+    ];
+  };
+
+  const onSubmit = (data: TaskFormValues) => {
+    const dueAt = data.dueDate && data.dueTime
+      ? new Date(`${data.dueDate}T${data.dueTime}:00`).toISOString()
+      : data.dueDate
+      ? new Date(`${data.dueDate}T17:00:00`).toISOString()
+      : undefined;
+
+    createTask.mutate({
+      title: data.title,
+      description: data.description,
+      owner_id: data.assignTarget === 'person' ? data.ownerId : undefined,
+      department_id: data.departmentId,
+      timing_type: data.timingType as TimingType,
+      importance: data.importance,
+      due_at: data.timingType !== 'flexible' ? dueAt : undefined,
+      review_on: data.timingType === 'flexible' ? data.reviewOn : undefined,
+      proof_type: data.proofType as ProofType,
+      requires_approval: data.requiresApproval,
+      approver_id: data.approverId,
+      read_aloud: data.readAloud,
+      checklist_items: checklistItems.length > 0 ? checklistItems : undefined,
+    }, {
+      onSuccess: (task) => {
+        navigate(`/tasks?task=${task.id}`);
+      },
+    });
+  };
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -53,144 +167,360 @@ export default function CreateTaskPage() {
         <h1 className="text-2xl font-bold">{t('task.new')}</h1>
       </div>
 
-      <div className="bg-white rounded-2xl border border-[#E5DDD3] overflow-hidden">
-        <div className="p-6 space-y-6">
-          {/* 1. What */}
-          <div>
-            <label className="block text-sm font-semibold mb-2">1. What needs to be done?</label>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] focus:outline-none focus:ring-2 focus:ring-[var(--color-maroon)] text-base"
-              placeholder="e.g., Prepare payment list for this month..."
-            />
-          </div>
-
-          {/* 2. Who */}
-          <div>
-            <label className="block text-sm font-semibold mb-2">2. Who should do it?</label>
-            <div className="flex gap-2 mb-3">
-              <button onClick={() => setAssignTarget('person')} className={cn('flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors', assignTarget === 'person' ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5 text-[var(--color-maroon)]' : 'border-[#E5DDD3]')}>
-                <User className="w-4 h-4" /> Person
-              </button>
-              <button onClick={() => setAssignTarget('department')} className={cn('flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors', assignTarget === 'department' ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5 text-[var(--color-maroon)]' : 'border-[#E5DDD3]')}>
-                <Building className="w-4 h-4" /> Department
-              </button>
-              <button onClick={() => setAssignTarget('pool')} className={cn('flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors', assignTarget === 'pool' ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5 text-[var(--color-maroon)]' : 'border-[#E5DDD3]')}>
-                <Globe className="w-4 h-4" /> Open Pool
-              </button>
-            </div>
-            <input
-              className="w-full px-4 py-2.5 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
-              placeholder={assignTarget === 'person' ? 'Search person...' : assignTarget === 'department' ? 'Select department...' : 'Select department for pool...'}
-            />
-          </div>
-
-          {/* 3. Timing Type */}
-          <div>
-            <label className="block text-sm font-semibold mb-2">3. Timing type</label>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {TIMING_OPTIONS.filter(t => t.type !== 'repeating').map((opt) => {
-                const Icon = opt.icon;
-                return (
-                  <button
-                    key={opt.type}
-                    onClick={() => setTimingType(opt.type)}
+      <form onSubmit={handleSubmit(onSubmit)}>
+        <div className="bg-white rounded-2xl border border-[#E5DDD3] overflow-hidden">
+          <div className="p-6 space-y-6">
+            {/* 1. What */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">1. What needs to be done?</label>
+              <Controller
+                name="title"
+                control={control}
+                render={({ field }) => (
+                  <input
+                    {...field}
                     className={cn(
-                      'flex flex-col items-center gap-1 p-3 rounded-xl border-2 transition-all text-center',
-                      timingType === opt.type
-                        ? 'border-current shadow-sm'
-                        : 'border-[#E5DDD3] hover:border-current/30'
+                      'w-full px-4 py-3 rounded-xl border bg-[var(--color-ivory)] focus:outline-none focus:ring-2 focus:ring-[var(--color-maroon)] text-base',
+                      errors.title ? 'border-[var(--color-urgent)]' : 'border-[#E5DDD3]'
                     )}
-                    style={{ color: opt.color }}
-                  >
-                    <Icon className="w-6 h-6" />
-                    <span className="text-sm font-semibold">{opt.label}</span>
-                    <span className="text-[10px] opacity-70">{opt.desc}</span>
-                  </button>
-                );
-              })}
+                    placeholder="e.g., Prepare payment list for this month..."
+                  />
+                )}
+              />
+              {errors.title && <p className="text-xs text-[var(--color-urgent)] mt-1">{errors.title.message}</p>}
+              <Controller
+                name="description"
+                control={control}
+                render={({ field }) => (
+                  <textarea
+                    {...field}
+                    className="w-full mt-2 px-4 py-2 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm resize-none"
+                    rows={2}
+                    placeholder="Description (optional)..."
+                  />
+                )}
+              />
             </div>
-          </div>
 
-          {/* 4. Date */}
-          <div>
-            <label className="block text-sm font-semibold mb-2">
-              4. {timingType === 'flexible' ? 'Check again on' : 'Due date'}
-            </label>
-            <div className="flex flex-wrap gap-2 mb-3">
-              {DATE_CHIPS.map((chip) => (
-                <button key={chip} className="px-3 py-1.5 rounded-full border border-[#E5DDD3] text-sm hover:bg-[var(--color-ivory)] transition-colors">
-                  {chip}
-                </button>
-              ))}
-            </div>
-            <div className="flex gap-3">
-              <input type="date" className="flex-1 px-3 py-2 rounded-lg border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm" />
-              {timingType !== 'flexible' && (
-                <input type="time" className="w-32 px-3 py-2 rounded-lg border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm" />
+            {/* 2. Who */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">2. Who should do it?</label>
+              <Controller
+                name="assignTarget"
+                control={control}
+                render={({ field }) => (
+                  <div className="flex gap-2 mb-3">
+                    {[
+                      { value: 'person', icon: User, label: 'Person' },
+                      { value: 'department', icon: Building, label: 'Department' },
+                      { value: 'pool', icon: Globe, label: 'Open Pool' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => field.onChange(opt.value)}
+                        className={cn(
+                          'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors',
+                          field.value === opt.value ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5 text-[var(--color-maroon)]' : 'border-[#E5DDD3]'
+                        )}
+                      >
+                        <opt.icon className="w-4 h-4" /> {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              />
+
+              {assignTarget === 'person' && (
+                <div className="relative">
+                  {selectedPerson ? (
+                    <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[var(--color-maroon)] bg-[var(--color-maroon)]/5">
+                      <User className="w-4 h-4 text-[var(--color-maroon)]" />
+                      <span className="text-sm font-medium">{selectedPerson.full_name}</span>
+                      <button type="button" onClick={() => { setValue('ownerId', ''); setPersonSearch(''); }} className="ml-auto">
+                        <X className="w-4 h-4 text-[var(--color-ink)]/40" />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <input
+                        value={personSearch}
+                        onChange={(e) => { setPersonSearch(e.target.value); setShowPersonDropdown(true); }}
+                        onFocus={() => setShowPersonDropdown(true)}
+                        className="w-full px-4 py-2.5 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+                        placeholder="Search person..."
+                      />
+                      {showPersonDropdown && filteredPeople.length > 0 && (
+                        <>
+                          <div className="fixed inset-0 z-10" onClick={() => setShowPersonDropdown(false)} />
+                          <div className="absolute top-full mt-1 w-full bg-white rounded-xl border border-[#E5DDD3] shadow-lg z-20 max-h-48 overflow-y-auto">
+                            {filteredPeople.map((p) => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-[var(--color-ivory)] transition-colors text-left"
+                                onClick={() => {
+                                  setValue('ownerId', p.id);
+                                  setPersonSearch(p.full_name);
+                                  setShowPersonDropdown(false);
+                                }}
+                              >
+                                <div className="w-6 h-6 rounded-full bg-[var(--color-maroon)]/10 flex items-center justify-center text-[10px] font-semibold text-[var(--color-maroon)]">
+                                  {p.full_name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                                </div>
+                                <span>{p.full_name}</span>
+                                {p.job_title && <span className="text-[var(--color-ink)]/30 text-xs ml-auto">{p.job_title}</span>}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {(assignTarget === 'department' || assignTarget === 'pool') && (
+                <Controller
+                  name="departmentId"
+                  control={control}
+                  render={({ field }) => (
+                    <select
+                      {...field}
+                      className="w-full px-4 py-2.5 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+                    >
+                      <option value="">Select department...</option>
+                      {departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {i18n.language === 'ml' && d.name_ml ? d.name_ml : d.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                />
               )}
             </div>
-          </div>
 
-          {/* 5. Importance */}
-          <div>
-            <label className="block text-sm font-semibold mb-2">5. Importance</label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setImportance('normal')}
-                className={cn('px-4 py-2 rounded-lg text-sm border transition-colors', importance === 'normal' ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5' : 'border-[#E5DDD3]')}
-              >
-                Normal
-              </button>
-              <button
-                onClick={() => setImportance('important')}
-                className={cn('flex items-center gap-1 px-4 py-2 rounded-lg text-sm border transition-colors', importance === 'important' ? 'border-[var(--color-gold)] bg-[var(--color-gold)]/10 text-[var(--color-gold-text)]' : 'border-[#E5DDD3]')}
-              >
-                <Star className="w-4 h-4" /> Important
-              </button>
+            {/* 3. Timing Type */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">3. Timing type</label>
+              <Controller
+                name="timingType"
+                control={control}
+                render={({ field }) => (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {TIMING_OPTIONS.map((opt) => {
+                      const Icon = opt.icon;
+                      return (
+                        <button
+                          key={opt.type}
+                          type="button"
+                          onClick={() => field.onChange(opt.type)}
+                          className={cn(
+                            'flex flex-col items-center gap-1 p-3 rounded-xl border-2 transition-all text-center',
+                            field.value === opt.type ? 'border-current shadow-sm' : 'border-[#E5DDD3] hover:border-current/30'
+                          )}
+                          style={{ color: opt.color }}
+                        >
+                          <Icon className="w-6 h-6" />
+                          <span className="text-sm font-semibold">{i18n.language === 'ml' ? opt.labelMl : opt.label}</span>
+                          <span className="text-[10px] opacity-70">{opt.desc}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              />
             </div>
-          </div>
 
-          {/* 6. Proof Type */}
-          <div>
-            <label className="block text-sm font-semibold mb-2">6. Proof required</label>
-            <div className="flex flex-wrap gap-2">
-              {PROOF_OPTIONS.map((opt) => {
-                const Icon = opt.icon;
-                return (
-                  <button
-                    key={opt.type}
-                    onClick={() => setProofType(opt.type)}
-                    className={cn(
-                      'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors',
-                      proofType === opt.type ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5 text-[var(--color-maroon)]' : 'border-[#E5DDD3]'
+            {/* 4. Date */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">
+                4. {timingType === 'flexible' ? 'Check again on' : 'Due date'}
+              </label>
+              {timingType !== 'flexible' && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {getDateChips().map((chip) => (
+                    <button
+                      key={chip.label}
+                      type="button"
+                      className="px-3 py-1.5 rounded-full border border-[#E5DDD3] text-sm hover:bg-[var(--color-ivory)] transition-colors"
+                      onClick={() => { setValue('dueDate', chip.date); setValue('dueTime', chip.time); }}
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-3">
+                {timingType === 'flexible' ? (
+                  <Controller
+                    name="reviewOn"
+                    control={control}
+                    render={({ field }) => (
+                      <input type="date" {...field} className="flex-1 px-3 py-2 rounded-lg border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm" />
                     )}
+                  />
+                ) : (
+                  <>
+                    <Controller
+                      name="dueDate"
+                      control={control}
+                      render={({ field }) => (
+                        <input type="date" {...field} className="flex-1 px-3 py-2 rounded-lg border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm" />
+                      )}
+                    />
+                    <Controller
+                      name="dueTime"
+                      control={control}
+                      render={({ field }) => (
+                        <input type="time" {...field} className="w-32 px-3 py-2 rounded-lg border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm" />
+                      )}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* 5. Importance */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">5. Importance</label>
+              <Controller
+                name="importance"
+                control={control}
+                render={({ field }) => (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => field.onChange('normal')}
+                      className={cn('px-4 py-2 rounded-lg text-sm border transition-colors', field.value === 'normal' ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5' : 'border-[#E5DDD3]')}
+                    >
+                      Normal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => field.onChange('important')}
+                      className={cn('flex items-center gap-1 px-4 py-2 rounded-lg text-sm border transition-colors', field.value === 'important' ? 'border-[var(--color-gold)] bg-[var(--color-gold)]/10 text-[var(--color-gold-text)]' : 'border-[#E5DDD3]')}
+                    >
+                      <Star className="w-4 h-4" /> Important
+                    </button>
+                  </div>
+                )}
+              />
+            </div>
+
+            {/* 6. Proof Type */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">6. Proof required</label>
+              <Controller
+                name="proofType"
+                control={control}
+                render={({ field }) => (
+                  <div className="flex flex-wrap gap-2">
+                    {PROOF_OPTIONS.map((opt) => {
+                      const Icon = opt.icon;
+                      return (
+                        <button
+                          key={opt.type}
+                          type="button"
+                          onClick={() => field.onChange(opt.type)}
+                          className={cn(
+                            'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors',
+                            field.value === opt.type ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5 text-[var(--color-maroon)]' : 'border-[#E5DDD3]'
+                          )}
+                        >
+                          <Icon className="w-4 h-4" /> {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              />
+
+              {/* Checklist items when proof type is checklist */}
+              {proofType === 'checklist' && (
+                <div className="mt-3 space-y-2">
+                  {checklistItems.map((item, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <input
+                        value={item.text}
+                        onChange={(e) => {
+                          const items = [...checklistItems];
+                          items[idx] = { ...items[idx], text: e.target.value };
+                          setChecklistItems(items);
+                        }}
+                        className="flex-1 px-3 py-2 rounded-lg border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+                        placeholder={`Item ${idx + 1}`}
+                      />
+                      <label className="flex items-center gap-1 text-xs text-[var(--color-ink)]/50">
+                        <input
+                          type="checkbox"
+                          checked={item.requires_photo}
+                          onChange={(e) => {
+                            const items = [...checklistItems];
+                            items[idx] = { ...items[idx], requires_photo: e.target.checked };
+                            setChecklistItems(items);
+                          }}
+                        /> 📷
+                      </label>
+                      <button type="button" onClick={() => setChecklistItems(checklistItems.filter((_, i) => i !== idx))}>
+                        <Trash2 className="w-4 h-4 text-[var(--color-ink)]/30" />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setChecklistItems([...checklistItems, { text: '', requires_photo: false }])}
+                    className="flex items-center gap-1 text-sm text-[var(--color-maroon)] hover:underline"
                   >
-                    <Icon className="w-4 h-4" /> {opt.label}
+                    <Plus className="w-4 h-4" /> Add item
                   </button>
-                );
-              })}
+                </div>
+              )}
+            </div>
+
+            {/* 7. Options */}
+            <div className="flex flex-wrap gap-4 text-sm">
+              <Controller
+                name="requiresApproval"
+                control={control}
+                render={({ field }) => (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={field.value} onChange={(e) => field.onChange(e.target.checked)} className="rounded" />
+                    Requires approval
+                  </label>
+                )}
+              />
+              <Controller
+                name="readAloud"
+                control={control}
+                render={({ field }) => (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={field.value} onChange={(e) => field.onChange(e.target.checked)} className="rounded" />
+                    Read aloud (Malayalam)
+                  </label>
+                )}
+              />
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 border-t border-[#E5DDD3] bg-[var(--color-ivory)] flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button type="button" className="flex items-center gap-1.5 text-sm text-[var(--color-ink)]/50 hover:text-[var(--color-ink)] transition-colors">
+                <Save className="w-4 h-4" /> Save as template
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="secondary" onClick={() => navigate(-1)}>Cancel</Button>
+              <Button type="submit" disabled={createTask.isPending}>
+                {createTask.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
+                Create Task
+              </Button>
             </div>
           </div>
         </div>
-
-        {/* Footer */}
-        <div className="px-6 py-4 border-t border-[#E5DDD3] bg-[var(--color-ivory)] flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button className="flex items-center gap-1.5 text-sm text-[var(--color-ink)]/50 hover:text-[var(--color-ink)] transition-colors">
-              <Save className="w-4 h-4" /> Save as template
-            </button>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={() => navigate(-1)}>Cancel</Button>
-            <Button disabled={!title.trim()}>
-              Create Task
-            </Button>
-          </div>
-        </div>
-      </div>
+      </form>
     </div>
   );
 }
-

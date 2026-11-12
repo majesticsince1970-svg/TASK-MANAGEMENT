@@ -59,3 +59,4 @@ export const queryKeys = {
   announcements: () => ['announcements'] as const,
   eodReport: (userId: string, date: string) => ['eod', userId, date] as const,
 } as const;
+
