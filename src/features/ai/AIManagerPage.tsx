@@ -355,19 +355,23 @@ export default function AIManagerPage() {
 
   /* ─── Voice recognition (continuous with interim results) ─── */
 
-  const startListening = useCallback(() => {
+  const startListening = useCallback((listenLang?: 'en-IN' | 'ml-IN') => {
     const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
     if (!SpeechRecognition) {
       setChatMessages(prev => [...prev, { role: 'ai', text: '⚠️ Speech recognition is not supported in this browser. Please use Chrome.' }]);
       return;
     }
 
+    // Set the language if provided
+    const lang = listenLang || language;
+    if (listenLang) setLanguage(listenLang);
+
     // Clear any previous draft
     setDraftMessage('');
     setInterimText('');
 
     const recognition = new SpeechRecognition();
-    recognition.lang = language;
+    recognition.lang = lang;
     recognition.interimResults = true;     // Show live transcription
     recognition.continuous = true;         // Don't stop on first pause
     recognition.maxAlternatives = 1;
@@ -560,20 +564,8 @@ export default function AIManagerPage() {
         </div>
         <div className="flex-1">
           <h1 className="text-2xl font-bold">AI Manager</h1>
-          <p className="text-xs text-[var(--color-ink)]/40">Powered by Gemini • Speak in English or Malayalam</p>
+          <p className="text-xs text-[var(--color-ink)]/40">Powered by Gemini • English & മലയാളം</p>
         </div>
-        {/* Language toggle */}
-        <button
-          onClick={() => setLanguage(l => l === 'en-IN' ? 'ml-IN' : 'en-IN')}
-          className={cn(
-            'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
-            language === 'ml-IN'
-              ? 'bg-[var(--color-maroon)] text-white border-[var(--color-maroon)]'
-              : 'bg-white border-[#E5DDD3] text-[var(--color-ink)]/60'
-          )}
-        >
-          {language === 'ml-IN' ? 'മലയാളം' : 'EN'}
-        </button>
       </div>
 
       {/* Tabs */}
@@ -747,10 +739,10 @@ export default function AIManagerPage() {
                         size="sm"
                         variant="outline"
                         onClick={() => {
-                          // Re-record
+                          // Re-record in the same language
                           setDraftMessage('');
                           setInterimText('');
-                          startListening();
+                          startListening(language);
                         }}
                         className="text-xs h-8"
                       >
@@ -773,26 +765,52 @@ export default function AIManagerPage() {
 
           {/* ─── Input bar with mic ─── */}
           <div className="p-3 border-t border-[#E5DDD3]">
+            {/* Two language mic buttons when not listening */}
+            {!isListening && !draftMessage && (
+              <div className="flex items-center gap-2 mb-2">
+                <button
+                  onClick={() => startListening('en-IN')}
+                  disabled={isProcessing}
+                  className={cn(
+                    'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all shadow-sm',
+                    language === 'en-IN'
+                      ? 'bg-[var(--color-maroon)] text-white shadow-md'
+                      : 'bg-white border border-[#E5DDD3] text-[var(--color-ink)]/70 hover:bg-[var(--color-ivory)]'
+                  )}
+                >
+                  <Mic className="w-4 h-4" />
+                  🎤 Speak English
+                </button>
+                <button
+                  onClick={() => startListening('ml-IN')}
+                  disabled={isProcessing}
+                  className={cn(
+                    'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all shadow-sm',
+                    language === 'ml-IN'
+                      ? 'bg-[var(--color-maroon)] text-white shadow-md'
+                      : 'bg-white border border-[#E5DDD3] text-[var(--color-ink)]/70 hover:bg-[var(--color-ivory)]'
+                  )}
+                >
+                  <Mic className="w-4 h-4" />
+                  🎤 മലയാളം
+                </button>
+              </div>
+            )}
+
             <div className="flex items-center gap-2">
-              {/* Mic button */}
-              <button
-                onClick={isListening ? stopListening : startListening}
-                disabled={isProcessing || (!!draftMessage && !isListening)}
-                className={cn(
-                  'w-12 h-12 rounded-full flex items-center justify-center transition-all shrink-0',
-                  isListening
-                    ? 'bg-[var(--color-urgent)] text-white animate-pulse shadow-lg scale-110'
-                    : draftMessage
-                      ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                      : 'bg-[var(--color-maroon)] text-white hover:bg-[var(--color-maroon)]/90 shadow-md'
-                )}
-              >
-                {isListening ? <Square className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-              </button>
+              {/* Stop listening button (shown while recording) */}
+              {isListening && (
+                <button
+                  onClick={stopListening}
+                  className="w-12 h-12 rounded-full bg-[var(--color-urgent)] text-white animate-pulse shadow-lg scale-110 flex items-center justify-center transition-all shrink-0"
+                >
+                  <Square className="w-5 h-5" />
+                </button>
+              )}
 
               {isListening ? (
                 <div className="flex-1 px-4 py-2.5 rounded-xl bg-red-50 border border-red-200 text-sm text-[var(--color-urgent)] animate-pulse">
-                  🎤 Listening{language === 'ml-IN' ? ' (മലയാളം)' : ' (English)'}... Speak freely, then tap Done
+                  🎤 Listening in {language === 'ml-IN' ? 'മലയാളം' : 'English'}... Speak freely, then tap ⏹ Done
                 </div>
               ) : (
                 <input
@@ -800,7 +818,7 @@ export default function AIManagerPage() {
                   onChange={(e) => setAskInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                   className="flex-1 px-4 py-2.5 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-maroon)]"
-                  placeholder={language === 'ml-IN' ? 'ഇവിടെ ടൈപ്പ് ചെയ്യൂ അല്ലെങ്കിൽ മൈക്ക് അമർത്തൂ...' : 'Type or press mic to speak...'}
+                  placeholder={language === 'ml-IN' ? 'ഇവിടെ ടൈപ്പ് ചെയ്യൂ അല്ലെങ്കിൽ മുകളിൽ മൈക്ക് അമർത്തൂ...' : 'Type here, or tap a mic button above to speak...'}
                   disabled={isProcessing || !!draftMessage}
                 />
               )}
