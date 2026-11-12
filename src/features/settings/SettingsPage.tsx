@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAppSettings, useUpdateSettings, useDepartments, useHolidays, usePeople } from '@/lib/hooks';
+import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
+import { Dialog } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import {
   Store, Building, Users, Calendar, Bell, Brain, Shield, Keyboard, Palette,
-  Plus, Trash2, Save, Loader2, ChevronRight
+  Plus, Trash2, Save, Loader2, ChevronRight, AlertTriangle
 } from 'lucide-react';
 
 type SettingsTab = 'shop' | 'departments' | 'users' | 'holidays' | 'notifications' | 'ai' | 'privacy' | 'shortcuts' | 'appearance';
@@ -27,6 +30,7 @@ export default function SettingsPage() {
   const { t } = useTranslation();
   const { tab: urlTab } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SettingsTab>((urlTab as SettingsTab) || 'shop');
   const { data: settings } = useAppSettings();
   const updateSettings = useUpdateSettings();
@@ -37,6 +41,22 @@ export default function SettingsPage() {
   const [shopName, setShopName] = useState('');
   const [timezone, setTimezone] = useState('');
   const [workingDays, setWorkingDays] = useState<number[]>([]);
+
+  // Dialog states
+  const [showAddDept, setShowAddDept] = useState(false);
+  const [deptName, setDeptName] = useState('');
+  const [deptColor, setDeptColor] = useState('#7A1F2B');
+  const [deptSaving, setDeptSaving] = useState(false);
+
+  const [showAddHoliday, setShowAddHoliday] = useState(false);
+  const [holidayName, setHolidayName] = useState('');
+  const [holidayDate, setHolidayDate] = useState('');
+  const [holidaySaving, setHolidaySaving] = useState(false);
+
+  const [showAddUser, setShowAddUser] = useState(false);
+
+  const [confirmDelete, setConfirmDelete] = useState<{ type: string; id: string; name: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (settings) {
@@ -52,6 +72,63 @@ export default function SettingsPage() {
       timezone,
       working_days: workingDays,
     });
+  };
+
+  const handleAddDepartment = async () => {
+    if (!deptName.trim()) return;
+    setDeptSaving(true);
+    try {
+      const { error } = await supabase.from('departments').insert({
+        name: deptName.trim(),
+        color: deptColor,
+        sort_order: departments.length,
+      });
+      if (error) throw error;
+      queryClient.invalidateQueries({ queryKey: ['departments'] });
+      setShowAddDept(false);
+      setDeptName('');
+      setDeptColor('#7A1F2B');
+    } catch (err) {
+      console.error('Failed to add department:', err);
+    } finally {
+      setDeptSaving(false);
+    }
+  };
+
+  const handleAddHoliday = async () => {
+    if (!holidayName.trim() || !holidayDate) return;
+    setHolidaySaving(true);
+    try {
+      const { error } = await supabase.from('holidays').insert({
+        name: holidayName.trim(),
+        date: holidayDate,
+      });
+      if (error) throw error;
+      queryClient.invalidateQueries({ queryKey: ['holidays'] });
+      setShowAddHoliday(false);
+      setHolidayName('');
+      setHolidayDate('');
+    } catch (err) {
+      console.error('Failed to add holiday:', err);
+    } finally {
+      setHolidaySaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    try {
+      const table = confirmDelete.type === 'department' ? 'departments' : 'holidays';
+      const { error } = await supabase.from(table).delete().eq('id', confirmDelete.id);
+      if (error) throw error;
+      queryClient.invalidateQueries({ queryKey: [table] });
+      setConfirmDelete(null);
+    } catch (err) {
+      console.error('Failed to delete:', err);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -161,7 +238,7 @@ export default function SettingsPage() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Departments</h2>
-              <Button size="sm"><Plus className="w-4 h-4" /> Add</Button>
+              <Button size="sm" onClick={() => setShowAddDept(true)}><Plus className="w-4 h-4" /> Add</Button>
             </div>
             {departments.map((dept: any) => (
               <div key={dept.id} className="flex items-center gap-3 p-3 border border-[#E5DDD3] rounded-lg">
@@ -170,8 +247,11 @@ export default function SettingsPage() {
                   <p className="text-sm font-medium">{dept.name}</p>
                   {dept.name_ml && <p className="text-xs text-[var(--color-ink)]/40">{dept.name_ml}</p>}
                 </div>
-                <button className="p-1 hover:bg-[var(--color-ivory)] rounded transition-colors">
-                  <Trash2 className="w-4 h-4 text-[var(--color-ink)]/30" />
+                <button
+                  className="p-1 hover:bg-red-50 rounded transition-colors"
+                  onClick={() => setConfirmDelete({ type: 'department', id: dept.id, name: dept.name })}
+                >
+                  <Trash2 className="w-4 h-4 text-[var(--color-ink)]/30 hover:text-red-500" />
                 </button>
               </div>
             ))}
@@ -184,7 +264,7 @@ export default function SettingsPage() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Users</h2>
-              <Button size="sm"><Plus className="w-4 h-4" /> Add User</Button>
+              <Button size="sm" onClick={() => setShowAddUser(true)}><Plus className="w-4 h-4" /> Add User</Button>
             </div>
             {users.map((user: any) => (
               <div key={user.id} className="flex items-center gap-3 p-3 border border-[#E5DDD3] rounded-lg">
@@ -212,7 +292,7 @@ export default function SettingsPage() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Holidays</h2>
-              <Button size="sm"><Plus className="w-4 h-4" /> Add Holiday</Button>
+              <Button size="sm" onClick={() => setShowAddHoliday(true)}><Plus className="w-4 h-4" /> Add Holiday</Button>
             </div>
             {holidays.map((h: any) => (
               <div key={h.id} className="flex items-center gap-3 p-3 border border-[#E5DDD3] rounded-lg">
@@ -221,8 +301,11 @@ export default function SettingsPage() {
                   <p className="text-sm font-medium">{h.name}</p>
                   <p className="text-xs text-[var(--color-ink)]/40">{new Date(h.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
                 </div>
-                <button className="p-1 hover:bg-[var(--color-ivory)] rounded transition-colors">
-                  <Trash2 className="w-4 h-4 text-[var(--color-ink)]/30" />
+                <button
+                  className="p-1 hover:bg-red-50 rounded transition-colors"
+                  onClick={() => setConfirmDelete({ type: 'holiday', id: h.id, name: h.name })}
+                >
+                  <Trash2 className="w-4 h-4 text-[var(--color-ink)]/30 hover:text-red-500" />
                 </button>
               </div>
             ))}
@@ -354,6 +437,116 @@ export default function SettingsPage() {
           </div>
         )}
       </div>
+
+      {/* Add Department Dialog */}
+      <Dialog open={showAddDept} onOpenChange={setShowAddDept} title="Add Department">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Department Name</label>
+            <input
+              value={deptName}
+              onChange={(e) => setDeptName(e.target.value)}
+              className="w-full px-4 py-2 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+              placeholder="e.g. Gold Section"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Color</label>
+            <div className="flex items-center gap-3">
+              <input
+                type="color"
+                value={deptColor}
+                onChange={(e) => setDeptColor(e.target.value)}
+                className="w-10 h-10 rounded-lg border border-[#E5DDD3] cursor-pointer"
+              />
+              <span className="text-sm text-[var(--color-ink)]/50">{deptColor}</span>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setShowAddDept(false)}>Cancel</Button>
+            <Button onClick={handleAddDepartment} disabled={deptSaving || !deptName.trim()}>
+              {deptSaving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Plus className="w-4 h-4 mr-1" />}
+              Add Department
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Add Holiday Dialog */}
+      <Dialog open={showAddHoliday} onOpenChange={setShowAddHoliday} title="Add Holiday">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Holiday Name</label>
+            <input
+              value={holidayName}
+              onChange={(e) => setHolidayName(e.target.value)}
+              className="w-full px-4 py-2 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+              placeholder="e.g. Diwali"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Date</label>
+            <input
+              type="date"
+              value={holidayDate}
+              onChange={(e) => setHolidayDate(e.target.value)}
+              className="w-full px-4 py-2 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setShowAddHoliday(false)}>Cancel</Button>
+            <Button onClick={handleAddHoliday} disabled={holidaySaving || !holidayName.trim() || !holidayDate}>
+              {holidaySaving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Plus className="w-4 h-4 mr-1" />}
+              Add Holiday
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Add User Info Dialog */}
+      <Dialog open={showAddUser} onOpenChange={setShowAddUser} title="Add User">
+        <div className="space-y-4">
+          <p className="text-sm text-[var(--color-ink)]/70">
+            Users are created through Supabase Auth. Follow these steps:
+          </p>
+          <ol className="space-y-2 text-sm text-[var(--color-ink)]/60 list-decimal ml-4">
+            <li>Go to your <strong>Supabase Dashboard</strong> → Authentication → Users</li>
+            <li>Click <strong>"Add User"</strong> → fill in email and password</li>
+            <li>After the auth user is created, a profile row is automatically created via the database trigger</li>
+            <li>Come back here to <strong>Settings → Users</strong> to verify the user appears</li>
+            <li>Update their role, department, and other details from the <strong>Profiles</strong> table</li>
+          </ol>
+          <div className="p-3 bg-amber-50 rounded-lg flex gap-2 text-sm text-amber-800">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <p>For security, user creation is only available through the Supabase admin dashboard.</p>
+          </div>
+          <div className="flex justify-end pt-2">
+            <Button variant="ghost" onClick={() => setShowAddUser(false)}>Close</Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={!!confirmDelete}
+        onOpenChange={(open) => { if (!open) setConfirmDelete(null); }}
+        title={`Delete ${confirmDelete?.type === 'department' ? 'Department' : 'Holiday'}?`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-[var(--color-ink)]/70">
+            Are you sure you want to delete <strong>{confirmDelete?.name}</strong>? This action cannot be undone.
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setConfirmDelete(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
+              {deleting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Trash2 className="w-4 h-4 mr-1" />}
+              Delete
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }

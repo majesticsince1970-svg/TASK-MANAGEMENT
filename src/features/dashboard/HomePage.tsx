@@ -1,17 +1,19 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
-import { useDashboardStats } from '@/lib/hooks';
+import { useDashboardStats, useDepartments, useAiAlerts } from '@/lib/hooks';
 import { useTasks } from '@/features/tasks/hooks';
 import { workOrderSort } from '@/lib/workOrder';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import {
   Plus, Mic, ClipboardList, CheckCircle, AlertTriangle, Clock,
-  TrendingUp, Users, Bot, BarChart3, ChevronRight, Star
+  TrendingUp, Users, Bot, BarChart3, ChevronRight, Star, Send, Loader2
 } from 'lucide-react';
 import { isPast, formatDistanceToNow } from 'date-fns';
-import type { Task } from '@/types/database';
+import type { Task, Department } from '@/types/database';
 
 export default function HomePage() {
   const { t } = useTranslation();
@@ -19,16 +21,52 @@ export default function HomePage() {
   const navigate = useNavigate();
   const { data: stats } = useDashboardStats();
   const { data: myTasks = [] } = useTasks({ tab: 'my', status: ['new', 'seen', 'in_progress', 'sent_back'] });
+  const { data: departments = [] } = useDepartments();
+  const { data: allTasks = [] } = useTasks({});
+  const { data: aiAlerts = [] } = useAiAlerts('open');
 
   const isManager = profile?.role === 'owner' || profile?.role === 'director';
   const isSenior = profile?.senior_mode;
   const topTasks = workOrderSort(myTasks as any).slice(0, 5);
 
+  // AI Ask state (managers only)
+  const [aiQuestion, setAiQuestion] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiAnswer, setAiAnswer] = useState('');
+
+  const handleAskAI = async () => {
+    if (!aiQuestion.trim()) return;
+    setAiLoading(true);
+    setAiAnswer('');
+    try {
+      const { data, error } = await supabase.functions.invoke('ai-ask', {
+        body: { question: aiQuestion, user_id: profile?.id },
+      });
+      if (error) throw error;
+      setAiAnswer(data?.answer || 'No answer received.');
+    } catch {
+      setAiAnswer('Could not reach AI. Please try again.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  // Department tiles: count done/in-progress/overdue per dept
+  const deptTiles = departments.map((dept: Department) => {
+    const deptTasks = (allTasks as Task[]).filter((t) => t.department_id === dept.id);
+    const done = deptTasks.filter((t) => t.status === 'done').length;
+    const inProgress = deptTasks.filter((t) => ['new', 'seen', 'in_progress'].includes(t.status)).length;
+    const overdue = deptTasks.filter((t) =>
+      !['done', 'cancelled'].includes(t.status) && t.due_at && isPast(new Date(t.due_at))
+    ).length;
+    return { ...dept, done, inProgress, overdue };
+  });
+
   // Senior mode: 3 big buttons
   if (isSenior) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[70vh] gap-6">
-        <h1 className="text-3xl font-bold text-center">{t('app.title')}</h1>
+        <h1 className="text-3xl font-bold text-center">{t('app.name')}</h1>
         <p className="text-lg text-[var(--color-ink)]/60">
           {t('common.welcome')}, {profile?.full_name}
         </p>
@@ -144,6 +182,41 @@ export default function HomePage() {
         </div>
       )}
 
+      {/* Department Tiles */}
+      {isManager && deptTiles.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold mb-3">Department Overview</h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {deptTiles.map((dept) => (
+              <div
+                key={dept.id}
+                className="bg-white rounded-xl border border-[#E5DDD3] p-4 hover:shadow-sm transition-shadow cursor-pointer"
+                onClick={() => navigate(`/tasks?department=${dept.id}`)}
+              >
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: dept.color }} />
+                  <p className="text-sm font-medium truncate">{dept.name}</p>
+                </div>
+                <div className="flex gap-3 text-xs">
+                  <div>
+                    <p className="text-lg font-bold text-green-600">{dept.done}</p>
+                    <p className="text-[var(--color-ink)]/40">Done</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-amber-500">{dept.inProgress}</p>
+                    <p className="text-[var(--color-ink)]/40">Active</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-[var(--color-urgent)]">{dept.overdue}</p>
+                    <p className="text-[var(--color-ink)]/40">Overdue</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* AI Manager Preview (managers only) */}
       {isManager && (
         <div
@@ -156,7 +229,7 @@ export default function HomePage() {
           </div>
           <p className="text-sm text-white/70 mb-3">Your AI assistant has insights ready</p>
           <div className="flex gap-4 text-xs">
-            <span className="bg-white/10 px-2.5 py-1 rounded-full">3 alerts</span>
+            <span className="bg-white/10 px-2.5 py-1 rounded-full">{aiAlerts.length} alert{aiAlerts.length !== 1 ? 's' : ''}</span>
             <span className="bg-white/10 px-2.5 py-1 rounded-full">Daily digest ready</span>
           </div>
         </div>
@@ -175,6 +248,33 @@ export default function HomePage() {
           <button onClick={() => navigate('/reports?tab=leaderboard')} className="ml-auto text-xs text-[var(--color-maroon)] hover:underline">
             Leaderboard →
           </button>
+        </div>
+      )}
+
+      {/* Ask AI Input (managers only) */}
+      {isManager && (
+        <div className="bg-white rounded-xl border border-[#E5DDD3] p-4 space-y-3">
+          <div className="flex items-center gap-2 mb-1">
+            <Bot className="w-5 h-5 text-[var(--color-ai)]" />
+            <h2 className="text-sm font-semibold">Ask AI</h2>
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={aiQuestion}
+              onChange={(e) => setAiQuestion(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleAskAI()}
+              placeholder="Ask about tasks, productivity, staff..."
+              className="flex-1 px-4 py-2.5 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+            />
+            <Button onClick={handleAskAI} disabled={aiLoading || !aiQuestion.trim()} size="sm">
+              {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            </Button>
+          </div>
+          {aiAnswer && (
+            <div className="p-3 bg-[var(--color-ai)]/5 rounded-lg text-sm text-[var(--color-ink)]/80 whitespace-pre-wrap">
+              {aiAnswer}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -7,13 +7,16 @@ import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useCreateTask } from '@/features/tasks/hooks';
+import { useCreateTemplate } from '@/lib/hooks';
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/lib/auth';
 import type { TimingType, ProofType, Profile, Department } from '@/types/database';
 import {
-  Zap, Calendar, Mountain, RotateCcw, Star,
+  Zap, Calendar, Mountain, RotateCcw, Star, Repeat,
   Camera, FileText, Video, Hash, CheckSquare, Pen,
   Link2, CreditCard, AlignLeft, X, Users, User,
-  Building, Globe, ArrowLeft, Save, Loader2, Plus, Trash2
+  Building, Globe, ArrowLeft, Save, Loader2, Plus, Trash2,
+  Clock, Paperclip, Eye, UserCheck
 } from 'lucide-react';
 import { addDays, endOfMonth, nextSaturday, format, setHours, setMinutes } from 'date-fns';
 import { useQuery } from '@tanstack/react-query';
@@ -25,7 +28,7 @@ const taskSchema = z.object({
   assignTarget: z.enum(['person', 'department', 'pool']),
   ownerId: z.string().optional(),
   departmentId: z.string().optional(),
-  timingType: z.enum(['urgent', 'dated', 'long', 'flexible'] as const),
+  timingType: z.enum(['urgent', 'dated', 'long', 'flexible', 'repeating'] as const),
   dueDate: z.string().optional(),
   dueTime: z.string().optional(),
   reviewOn: z.string().optional(),
@@ -35,6 +38,11 @@ const taskSchema = z.object({
   approverId: z.string().optional(),
   readAloud: z.boolean(),
   checklistItems: z.array(z.object({ text: z.string(), requires_photo: z.boolean() })).optional(),
+  /* New fields */
+  watcherIds: z.array(z.string()).optional(),
+  attachmentsNote: z.string().optional(),
+  estimateMinutes: z.number().optional(),
+  estimateUnit: z.enum(['minutes', 'hours']).optional(),
 });
 
 type TaskFormValues = z.infer<typeof taskSchema>;
@@ -44,6 +52,7 @@ const TIMING_OPTIONS: { type: TimingType; label: string; labelMl: string; icon: 
   { type: 'dated', label: 'Dated', labelMl: 'തീയതിയുള്ളത്', icon: Calendar, color: '#B8862B', desc: 'Due within 30 days' },
   { type: 'long', label: 'Long task', labelMl: 'വലിയ ജോലി', icon: Mountain, color: '#7A1F2B', desc: '7-92 days, milestones' },
   { type: 'flexible', label: 'Flexible', labelMl: 'സമയപരിധിയില്ല', icon: RotateCcw, color: '#8A7A72', desc: 'No deadline, review date' },
+  { type: 'repeating', label: 'Repeating', labelMl: 'ആവർത്തിക്കുക', icon: Repeat, color: '#5B3FBF', desc: 'Recurring schedule' },
 ];
 
 const PROOF_OPTIONS: { type: ProofType; label: string; icon: React.ElementType }[] = [
@@ -84,14 +93,25 @@ function useDepartments() {
 export default function CreateTaskPage() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
+  const { profile } = useAuth();
   const createTask = useCreateTask();
+  const createTemplate = useCreateTemplate();
   const { data: people = [] } = usePeople();
   const { data: departments = [] } = useDepartments();
   const [personSearch, setPersonSearch] = useState('');
   const [showPersonDropdown, setShowPersonDropdown] = useState(false);
   const [checklistItems, setChecklistItems] = useState<{ text: string; requires_photo: boolean }[]>([]);
 
-  const { control, handleSubmit, watch, setValue, formState: { errors, isValid } } = useForm<TaskFormValues>({
+  /* Approver picker state */
+  const [approverSearch, setApproverSearch] = useState('');
+  const [showApproverDropdown, setShowApproverDropdown] = useState(false);
+
+  /* Watchers multi-select state */
+  const [watcherSearch, setWatcherSearch] = useState('');
+  const [showWatcherDropdown, setShowWatcherDropdown] = useState(false);
+  const [selectedWatchers, setSelectedWatchers] = useState<string[]>([]);
+
+  const { control, handleSubmit, watch, setValue, getValues, formState: { errors, isValid } } = useForm<TaskFormValues>({
     resolver: zodResolver(taskSchema),
     defaultValues: {
       title: '',
@@ -103,6 +123,10 @@ export default function CreateTaskPage() {
       requiresApproval: true,
       readAloud: false,
       checklistItems: [],
+      approverId: profile?.id || '',
+      watcherIds: [],
+      attachmentsNote: '',
+      estimateUnit: 'minutes',
     },
     mode: 'onChange',
   });
@@ -111,13 +135,24 @@ export default function CreateTaskPage() {
   const assignTarget = watch('assignTarget');
   const proofType = watch('proofType');
   const selectedOwnerId = watch('ownerId');
+  const selectedApproverId = watch('approverId');
 
   const filteredPeople = people.filter((p) =>
     p.full_name.toLowerCase().includes(personSearch.toLowerCase()) ||
     (p.full_name_ml && p.full_name_ml.includes(personSearch))
   );
 
+  const filteredApproverPeople = people.filter((p) =>
+    p.full_name.toLowerCase().includes(approverSearch.toLowerCase())
+  );
+
+  const filteredWatcherPeople = people.filter((p) =>
+    p.full_name.toLowerCase().includes(watcherSearch.toLowerCase()) &&
+    !selectedWatchers.includes(p.id)
+  );
+
   const selectedPerson = people.find((p) => p.id === selectedOwnerId);
+  const selectedApprover = people.find((p) => p.id === selectedApproverId);
 
   const getDateChips = () => {
     const now = new Date();
@@ -136,6 +171,10 @@ export default function CreateTaskPage() {
       ? new Date(`${data.dueDate}T17:00:00`).toISOString()
       : undefined;
 
+    const estimateMinutes = data.estimateMinutes
+      ? data.estimateUnit === 'hours' ? data.estimateMinutes * 60 : data.estimateMinutes
+      : undefined;
+
     createTask.mutate({
       title: data.title,
       description: data.description,
@@ -147,12 +186,29 @@ export default function CreateTaskPage() {
       review_on: data.timingType === 'flexible' ? data.reviewOn : undefined,
       proof_type: data.proofType as ProofType,
       requires_approval: data.requiresApproval,
-      approver_id: data.approverId,
+      approver_id: data.approverId || undefined,
       read_aloud: data.readAloud,
       checklist_items: checklistItems.length > 0 ? checklistItems : undefined,
+      watchers: selectedWatchers.length > 0 ? selectedWatchers : undefined,
     }, {
       onSuccess: (task) => {
         navigate(`/tasks?task=${task.id}`);
+      },
+    });
+  };
+
+  const handleSaveAsTemplate = () => {
+    const data = getValues();
+    createTemplate.mutate({
+      title: data.title,
+      timing_type: data.timingType,
+      proof_type: data.proofType,
+      importance: data.importance,
+      description: data.description,
+      checklist_items: checklistItems.length > 0 ? checklistItems : undefined,
+    }, {
+      onSuccess: () => {
+        alert('Template saved successfully!');
       },
     });
   };
@@ -308,7 +364,7 @@ export default function CreateTaskPage() {
                 name="timingType"
                 control={control}
                 render={({ field }) => (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                     {TIMING_OPTIONS.map((opt) => {
                       const Icon = opt.icon;
                       return (
@@ -502,13 +558,191 @@ export default function CreateTaskPage() {
                 )}
               />
             </div>
+
+            {/* 8. Approver */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">
+                <span className="flex items-center gap-1.5"><UserCheck className="w-4 h-4" /> 8. Approver</span>
+              </label>
+              <div className="relative">
+                {selectedApprover ? (
+                  <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[var(--color-maroon)] bg-[var(--color-maroon)]/5">
+                    <UserCheck className="w-4 h-4 text-[var(--color-maroon)]" />
+                    <span className="text-sm font-medium">{selectedApprover.full_name}</span>
+                    <button type="button" onClick={() => { setValue('approverId', ''); setApproverSearch(''); }} className="ml-auto">
+                      <X className="w-4 h-4 text-[var(--color-ink)]/40" />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      value={approverSearch}
+                      onChange={(e) => { setApproverSearch(e.target.value); setShowApproverDropdown(true); }}
+                      onFocus={() => setShowApproverDropdown(true)}
+                      className="w-full px-4 py-2.5 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+                      placeholder="Search approver... (default: you)"
+                    />
+                    {showApproverDropdown && filteredApproverPeople.length > 0 && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setShowApproverDropdown(false)} />
+                        <div className="absolute top-full mt-1 w-full bg-white rounded-xl border border-[#E5DDD3] shadow-lg z-20 max-h-48 overflow-y-auto">
+                          {filteredApproverPeople.map((p) => (
+                            <button
+                              key={p.id}
+                              type="button"
+                              className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-[var(--color-ivory)] transition-colors text-left"
+                              onClick={() => {
+                                setValue('approverId', p.id);
+                                setApproverSearch(p.full_name);
+                                setShowApproverDropdown(false);
+                              }}
+                            >
+                              <div className="w-6 h-6 rounded-full bg-[var(--color-maroon)]/10 flex items-center justify-center text-[10px] font-semibold text-[var(--color-maroon)]">
+                                {p.full_name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                              </div>
+                              <span>{p.full_name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* 9. Watchers / helpers */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">
+                <span className="flex items-center gap-1.5"><Eye className="w-4 h-4" /> 9. Watchers / Helpers</span>
+              </label>
+              {selectedWatchers.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {selectedWatchers.map((wId) => {
+                    const person = people.find(p => p.id === wId);
+                    return (
+                      <span key={wId} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-[var(--color-ivory)] border border-[#E5DDD3] text-xs">
+                        {person?.full_name || 'Unknown'}
+                        <button type="button" onClick={() => setSelectedWatchers(selectedWatchers.filter(id => id !== wId))}>
+                          <X className="w-3 h-3 text-[var(--color-ink)]/40" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="relative">
+                <input
+                  value={watcherSearch}
+                  onChange={(e) => { setWatcherSearch(e.target.value); setShowWatcherDropdown(true); }}
+                  onFocus={() => setShowWatcherDropdown(true)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+                  placeholder="Add watchers..."
+                />
+                {showWatcherDropdown && filteredWatcherPeople.length > 0 && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setShowWatcherDropdown(false)} />
+                    <div className="absolute top-full mt-1 w-full bg-white rounded-xl border border-[#E5DDD3] shadow-lg z-20 max-h-48 overflow-y-auto">
+                      {filteredWatcherPeople.slice(0, 10).map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-[var(--color-ivory)] transition-colors text-left"
+                          onClick={() => {
+                            setSelectedWatchers([...selectedWatchers, p.id]);
+                            setValue('watcherIds', [...selectedWatchers, p.id]);
+                            setWatcherSearch('');
+                            setShowWatcherDropdown(false);
+                          }}
+                        >
+                          <div className="w-6 h-6 rounded-full bg-[var(--color-maroon)]/10 flex items-center justify-center text-[10px] font-semibold text-[var(--color-maroon)]">
+                            {p.full_name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                          </div>
+                          <span>{p.full_name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* 10. Attachments note */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">
+                <span className="flex items-center gap-1.5"><Paperclip className="w-4 h-4" /> 10. Attachments / Instructions note</span>
+              </label>
+              <Controller
+                name="attachmentsNote"
+                control={control}
+                render={({ field }) => (
+                  <textarea
+                    {...field}
+                    className="w-full px-4 py-2 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm resize-none"
+                    rows={3}
+                    placeholder="Reference files, links, or detailed instructions..."
+                  />
+                )}
+              />
+            </div>
+
+            {/* 11. Estimate */}
+            <div>
+              <label className="block text-sm font-semibold mb-2">
+                <span className="flex items-center gap-1.5"><Clock className="w-4 h-4" /> 11. Time estimate</span>
+              </label>
+              <div className="flex gap-2">
+                <Controller
+                  name="estimateMinutes"
+                  control={control}
+                  render={({ field }) => (
+                    <input
+                      type="number"
+                      min={1}
+                      value={field.value || ''}
+                      onChange={(e) => field.onChange(e.target.value ? Number(e.target.value) : undefined)}
+                      className="w-24 px-3 py-2 rounded-lg border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm"
+                      placeholder="0"
+                    />
+                  )}
+                />
+                <Controller
+                  name="estimateUnit"
+                  control={control}
+                  render={({ field }) => (
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => field.onChange('minutes')}
+                        className={cn('px-3 py-2 rounded-lg text-sm border transition-colors', field.value === 'minutes' ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5' : 'border-[#E5DDD3]')}
+                      >
+                        Minutes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => field.onChange('hours')}
+                        className={cn('px-3 py-2 rounded-lg text-sm border transition-colors', field.value === 'hours' ? 'border-[var(--color-maroon)] bg-[var(--color-maroon)]/5' : 'border-[#E5DDD3]')}
+                      >
+                        Hours
+                      </button>
+                    </div>
+                  )}
+                />
+              </div>
+            </div>
           </div>
 
           {/* Footer */}
           <div className="px-6 py-4 border-t border-[#E5DDD3] bg-[var(--color-ivory)] flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <button type="button" className="flex items-center gap-1.5 text-sm text-[var(--color-ink)]/50 hover:text-[var(--color-ink)] transition-colors">
-                <Save className="w-4 h-4" /> Save as template
+              <button
+                type="button"
+                className="flex items-center gap-1.5 text-sm text-[var(--color-ink)]/50 hover:text-[var(--color-ink)] transition-colors"
+                onClick={handleSaveAsTemplate}
+                disabled={createTemplate.isPending}
+              >
+                <Save className="w-4 h-4" />
+                {createTemplate.isPending ? 'Saving...' : 'Save as template'}
               </button>
             </div>
             <div className="flex items-center gap-2">

@@ -1,26 +1,45 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '@/lib/auth';
+import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
-import { Globe, Clock, Bell, Shield, Check } from 'lucide-react';
+import { Globe, Clock, Bell, Shield, Check, Loader2 } from 'lucide-react';
 
 const STEPS = ['language', 'shift', 'notifications', 'privacy'] as const;
 
 export default function OnboardingPage() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
+  const { profile } = useAuth();
   const [step, setStep] = useState(0);
-  const [shiftStart, setShiftStart] = useState('09:00');
-  const [shiftEnd, setShiftEnd] = useState('18:00');
+  const [shiftStart, setShiftStart] = useState(profile?.shift_start || '09:00');
+  const [shiftEnd, setShiftEnd] = useState(profile?.shift_end || '18:00');
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const stepIcons = [Globe, Clock, Bell, Shield];
   const stepLabels = ['Language', 'Shift Times', 'Notifications', 'Privacy Policy'];
 
-  const next = () => {
+  const next = async () => {
     if (step < STEPS.length - 1) {
       setStep(step + 1);
     } else {
+      // Save onboarding preferences to profile
+      if (profile?.id) {
+        setSaving(true);
+        try {
+          await supabase.from('profiles').update({
+            language: i18n.language as 'en' | 'ml',
+            shift_start: shiftStart,
+            shift_end: shiftEnd,
+          }).eq('id', profile.id);
+        } catch {
+          // Non-blocking — navigate anyway
+        } finally {
+          setSaving(false);
+        }
+      }
       navigate('/');
     }
   };
@@ -136,8 +155,9 @@ export default function OnboardingPage() {
             ) : <div />}
             <Button
               onClick={next}
-              disabled={step === 3 && !privacyAccepted}
+              disabled={(step === 3 && !privacyAccepted) || saving}
             >
+              {saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
               {step === STEPS.length - 1 ? 'Get Started' : 'Continue'}
             </Button>
           </div>
@@ -146,4 +166,3 @@ export default function OnboardingPage() {
     </div>
   );
 }
-

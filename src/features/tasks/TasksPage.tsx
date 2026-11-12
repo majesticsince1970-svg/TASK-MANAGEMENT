@@ -5,17 +5,20 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
   Plus, List, LayoutGrid, Calendar, Filter,
-  ChevronRight, GripVertical
+  ChevronRight, GripVertical, ClipboardList
 } from 'lucide-react';
 import { StatusPill } from '@/components/StatusPill';
 import { TimingBadge } from '@/components/TimingBadge';
 import { TaskDrawer } from '@/components/TaskDrawer';
-import { useTasks, useTransitionTask, useClaimTask } from '@/features/tasks/hooks';
+import { EmptyState } from '@/components/EmptyState';
+import { useTasks, useTransitionTask } from '@/features/tasks/hooks';
+import { workOrderSort } from '@/lib/workOrder';
 import type { Task, TaskStatus, TimingType } from '@/types/database';
 import { isPast, format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay, startOfWeek, endOfWeek, addMonths, subMonths } from 'date-fns';
 import {
-  DndContext, closestCenter, DragEndEvent,
+  DndContext, closestCenter, DragEndEvent, DragOverEvent,
   useSensor, useSensors, PointerSensor, KeyboardSensor,
+  useDroppable,
 } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -23,26 +26,15 @@ import { CSS } from '@dnd-kit/utilities';
 type ViewMode = 'list' | 'board' | 'calendar';
 type Tab = 'my' | 'assigned' | 'team' | 'watching' | 'pickup';
 
-/* Demo tasks for UI fallback */
-const DEMO_TASKS: Task[] = [
-  { id: '1', title: 'Payments due list for this month', status: 'in_progress', timing_type: 'dated', owner_id: null, due_at: new Date(Date.now() + 86400000 * 3).toISOString(), importance: 'important', created_by: '', assign_target: 'person', helpers: [], watchers: [], snooze_count: 0, actual_minutes: 0, proof_type: 'none', requires_approval: true, read_aloud: false, escalation_level: 0, date_change_count: 0, source: 'owner', is_draft: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), title_ml: null, description: null, department_id: null, pool_department_id: null, review_on: null, started_at: null, submitted_at: null, completed_at: null, estimate_minutes: null, proof_rule: null, approver_id: null, report_back_to: null, template_id: null, routine_id: null, routine_instance_date: null, chain_run_id: null, chain_step: null, parent_task_id: null, batch_id: null, voice_note_id: null },
-  { id: '2', title: 'Morning cash & safe count', status: 'new', timing_type: 'repeating', owner_id: null, due_at: new Date(Date.now() - 3600000).toISOString(), importance: 'normal', created_by: '', assign_target: 'person', helpers: [], watchers: [], snooze_count: 0, actual_minutes: 0, proof_type: 'number', requires_approval: true, read_aloud: false, escalation_level: 0, date_change_count: 0, source: 'routine', is_draft: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), title_ml: null, description: null, department_id: null, pool_department_id: null, review_on: null, started_at: null, submitted_at: null, completed_at: null, estimate_minutes: null, proof_rule: null, approver_id: null, report_back_to: null, template_id: null, routine_id: null, routine_instance_date: null, chain_run_id: null, chain_step: null, parent_task_id: null, batch_id: null, voice_note_id: null },
-  { id: '3', title: 'Gold rate post', status: 'submitted', timing_type: 'repeating', owner_id: null, due_at: new Date().toISOString(), importance: 'normal', created_by: '', assign_target: 'person', helpers: [], watchers: [], snooze_count: 0, actual_minutes: 0, proof_type: 'photo', requires_approval: true, read_aloud: false, escalation_level: 0, date_change_count: 0, source: 'routine', is_draft: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), title_ml: null, description: null, department_id: null, pool_department_id: null, review_on: null, started_at: null, submitted_at: null, completed_at: null, estimate_minutes: null, proof_rule: null, approver_id: null, report_back_to: null, template_id: null, routine_id: null, routine_instance_date: null, chain_run_id: null, chain_step: null, parent_task_id: null, batch_id: null, voice_note_id: null },
-  { id: '4', title: 'Diwali reel edit', status: 'in_progress', timing_type: 'dated', owner_id: null, due_at: new Date(Date.now() + 86400000).toISOString(), importance: 'important', created_by: '', assign_target: 'person', helpers: [], watchers: [], snooze_count: 0, actual_minutes: 0, proof_type: 'file', requires_approval: true, read_aloud: false, escalation_level: 0, date_change_count: 0, source: 'manager', is_draft: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), title_ml: null, description: null, department_id: null, pool_department_id: null, review_on: null, started_at: null, submitted_at: null, completed_at: null, estimate_minutes: null, proof_rule: null, approver_id: null, report_back_to: null, template_id: null, routine_id: null, routine_instance_date: null, chain_run_id: null, chain_step: null, parent_task_id: null, batch_id: null, voice_note_id: null },
-  { id: '5', title: 'Full stock audit', status: 'in_progress', timing_type: 'long', owner_id: null, due_at: new Date(Date.now() + 86400000 * 45).toISOString(), importance: 'important', created_by: '', assign_target: 'person', helpers: [], watchers: [], snooze_count: 0, actual_minutes: 0, proof_type: 'checklist', requires_approval: true, read_aloud: false, escalation_level: 0, date_change_count: 0, source: 'owner', is_draft: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), title_ml: null, description: null, department_id: null, pool_department_id: null, review_on: null, started_at: null, submitted_at: null, completed_at: null, estimate_minutes: null, proof_rule: null, approver_id: null, report_back_to: null, template_id: null, routine_id: null, routine_instance_date: null, chain_run_id: null, chain_step: null, parent_task_id: null, batch_id: null, voice_note_id: null },
-  { id: '6', title: 'Find new packaging supplier', status: 'new', timing_type: 'flexible', owner_id: null, due_at: null, review_on: '2026-11-19', importance: 'normal', created_by: '', assign_target: 'person', helpers: [], watchers: [], snooze_count: 0, actual_minutes: 0, proof_type: 'none', requires_approval: true, read_aloud: false, escalation_level: 0, date_change_count: 0, source: 'owner', is_draft: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), title_ml: null, description: null, department_id: null, pool_department_id: null, started_at: null, submitted_at: null, completed_at: null, estimate_minutes: null, proof_rule: null, approver_id: null, report_back_to: null, template_id: null, routine_id: null, routine_instance_date: null, chain_run_id: null, chain_step: null, parent_task_id: null, batch_id: null, voice_note_id: null },
-  { id: '7', title: 'Bridal set from locker', status: 'done', timing_type: 'urgent', owner_id: null, due_at: new Date(Date.now() - 7200000).toISOString(), importance: 'normal', created_by: '', assign_target: 'person', helpers: [], watchers: [], snooze_count: 0, actual_minutes: 0, proof_type: 'photo', requires_approval: true, read_aloud: false, escalation_level: 0, date_change_count: 0, source: 'owner', is_draft: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), title_ml: null, description: null, department_id: null, pool_department_id: null, review_on: null, started_at: null, submitted_at: null, completed_at: new Date().toISOString(), estimate_minutes: null, proof_rule: null, approver_id: null, report_back_to: null, template_id: null, routine_id: null, routine_instance_date: null, chain_run_id: null, chain_step: null, parent_task_id: null, batch_id: null, voice_note_id: null },
-];
-
 const TIMING_COLORS: Record<TimingType, string> = {
   urgent: '#C62828', dated: '#B8862B', long: '#7A1F2B', flexible: '#8A7A72', repeating: '#5B3FBF',
 };
 
-const BOARD_COLUMNS: { key: TaskStatus[]; title: string; color: string }[] = [
-  { key: ['new', 'seen'], title: 'New', color: '#3B82F6' },
-  { key: ['in_progress'], title: 'In Progress', color: '#F59E0B' },
-  { key: ['submitted'], title: 'Submitted', color: '#8B5CF6' },
-  { key: ['done'], title: 'Done', color: '#22C55E' },
+const BOARD_COLUMNS: { key: TaskStatus[]; title: string; color: string; targetAction: string }[] = [
+  { key: ['new', 'seen'], title: 'New', color: '#3B82F6', targetAction: '' },
+  { key: ['in_progress'], title: 'In Progress', color: '#F59E0B', targetAction: 'start' },
+  { key: ['submitted'], title: 'Submitted', color: '#8B5CF6', targetAction: 'submit' },
+  { key: ['done'], title: 'Done', color: '#22C55E', targetAction: 'approve' },
 ];
 
 /* ─── Task Row ─── */
@@ -113,10 +105,11 @@ function BoardCard({ task, onClick }: { task: Task; onClick: () => void }) {
   );
 }
 
-/* ─── Board Column ─── */
-function BoardColumn({ title, tasks, color, onCardClick }: { title: string; tasks: Task[]; color: string; onCardClick: (id: string) => void }) {
+/* ─── Board Column (droppable) ─── */
+function BoardColumn({ columnId, title, tasks, color, onCardClick }: { columnId: string; title: string; tasks: Task[]; color: string; onCardClick: (id: string) => void }) {
+  const { setNodeRef, isOver } = useDroppable({ id: columnId });
   return (
-    <div className="min-w-[280px] max-w-[320px]">
+    <div ref={setNodeRef} className={cn('min-w-[280px] max-w-[320px]', isOver && 'ring-2 ring-blue-300 rounded-xl')}>
       <div className="flex items-center gap-2 mb-3 px-1">
         <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
         <h3 className="text-sm font-semibold">{title}</h3>
@@ -219,13 +212,19 @@ export default function TasksPage() {
   const selectedTaskId = searchParams.get('task');
 
   const { data: remoteTasks, isLoading, isError } = useTasks({ tab });
-  const tasks = (remoteTasks && remoteTasks.length > 0) ? remoteTasks : DEMO_TASKS;
+  const tasks = remoteTasks || [];
 
   const transition = useTransitionTask();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor)
   );
+
+  /* Apply workOrderSort for list view */
+  const sortedTasks = useMemo(() => {
+    if (view === 'list') return workOrderSort(tasks as Task[]);
+    return tasks;
+  }, [tasks, view]);
 
   const openTask = (id: string) => {
     setSearchParams({ task: id });
@@ -236,11 +235,40 @@ export default function TasksPage() {
     setSearchParams(searchParams);
   };
 
-  // Board DnD: map status to action
+  // Board DnD: determine target column and transition
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    // In a full impl, determine target column and call transition
+    if (!over) return;
+
+    const taskId = active.id as string;
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    // Determine which column the card was dropped on
+    const overId = over.id as string;
+
+    // Check if dropped on a column droppable
+    const targetColumn = BOARD_COLUMNS.find(col => col.title === overId);
+    if (!targetColumn) {
+      // Maybe dropped on another card — find which column that card belongs to
+      const overTask = tasks.find(t => t.id === overId);
+      if (!overTask) return;
+      const overColumn = BOARD_COLUMNS.find(col => col.key.includes(overTask.status));
+      if (!overColumn) return;
+      // If same column, just reorder (no status change)
+      if (overColumn.key.includes(task.status)) return;
+      // Transition
+      if (overColumn.targetAction) {
+        transition.mutate({ taskId, action: overColumn.targetAction as any });
+      }
+      return;
+    }
+
+    // Dropped directly on a column
+    if (targetColumn.key.includes(task.status)) return; // same column
+    if (targetColumn.targetAction) {
+      transition.mutate({ taskId, action: targetColumn.targetAction as any });
+    }
   };
 
   const tabCounts = useMemo(() => ({
@@ -317,34 +345,59 @@ export default function TasksPage() {
 
       {/* Content */}
       {!isLoading && view === 'list' && (
-        <div className="bg-white rounded-xl border border-[#E5DDD3] overflow-hidden">
-          {tasks.map((task) => (
-            <TaskRow key={task.id} task={task} onClick={() => openTask(task.id)} />
-          ))}
-          {tasks.length === 0 && (
-            <div className="text-center py-12 text-sm text-[var(--color-ink)]/40">No tasks found</div>
-          )}
-        </div>
+        sortedTasks.length > 0 ? (
+          <div className="bg-white rounded-xl border border-[#E5DDD3] overflow-hidden">
+            {sortedTasks.map((task) => (
+              <TaskRow key={task.id} task={task} onClick={() => openTask(task.id)} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={ClipboardList}
+            title="No tasks yet"
+            description="Create your first task or check back later."
+            action={{ label: 'New Task', onClick: () => navigate('/tasks/new') }}
+          />
+        )
       )}
 
       {!isLoading && view === 'board' && (
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <div className="flex gap-4 overflow-x-auto pb-4">
-            {BOARD_COLUMNS.map((col) => (
-              <BoardColumn
-                key={col.title}
-                title={col.title}
-                tasks={tasks.filter(t => col.key.includes(t.status))}
-                color={col.color}
-                onCardClick={openTask}
-              />
-            ))}
-          </div>
-        </DndContext>
+        tasks.length > 0 ? (
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <div className="flex gap-4 overflow-x-auto pb-4">
+              {BOARD_COLUMNS.map((col) => (
+                <BoardColumn
+                  key={col.title}
+                  columnId={col.title}
+                  title={col.title}
+                  tasks={tasks.filter(t => col.key.includes(t.status))}
+                  color={col.color}
+                  onCardClick={openTask}
+                />
+              ))}
+            </div>
+          </DndContext>
+        ) : (
+          <EmptyState
+            icon={ClipboardList}
+            title="No tasks yet"
+            description="Create your first task to see the board."
+            action={{ label: 'New Task', onClick: () => navigate('/tasks/new') }}
+          />
+        )
       )}
 
       {!isLoading && view === 'calendar' && (
-        <CalendarView tasks={tasks} onDayClick={openTask} />
+        tasks.length > 0 ? (
+          <CalendarView tasks={tasks} onDayClick={openTask} />
+        ) : (
+          <EmptyState
+            icon={ClipboardList}
+            title="No tasks yet"
+            description="Tasks with due dates will appear on the calendar."
+            action={{ label: 'New Task', onClick: () => navigate('/tasks/new') }}
+          />
+        )
       )}
 
       {/* Task Drawer */}

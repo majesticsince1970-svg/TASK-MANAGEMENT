@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { useTransitionTask } from '@/features/tasks/hooks';
@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { StatusPill } from '@/components/StatusPill';
 import { TimingBadge } from '@/components/TimingBadge';
 import { cn } from '@/lib/utils';
-import { Check, X, Clock, CalendarDays, Users, ArrowRight } from 'lucide-react';
+import { Check, X, Clock, CalendarDays, Users, ArrowRight, Loader2 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import type { Task } from '@/types/database';
 import { queryKeys } from '@/lib/queryKeys';
@@ -20,11 +20,20 @@ function usePendingApprovals() {
   return useQuery({
     queryKey: queryKeys.pendingApprovals(profile?.id || ''),
     queryFn: async () => {
-      const { data, error } = await supabase
+      // Tasks submitted for approval where current user is the approver
+      // Falls back to showing all submitted tasks if no approver_id filter
+      let query = supabase
         .from('tasks')
         .select('*')
         .eq('status', 'submitted')
         .order('submitted_at', { ascending: false });
+
+      // Filter to tasks where current user is the approver
+      if (profile?.id) {
+        query = query.or(`approver_id.eq.${profile.id},created_by.eq.${profile.id}`);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
       return (data || []) as Task[];
     },
@@ -39,7 +48,7 @@ function useDateChangeRequests() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('date_change_requests')
-        .select('*, task:tasks(title, timing_type)')
+        .select('*, task:tasks(title, timing_type, created_by)')
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
       if (error) throw error;
@@ -49,29 +58,15 @@ function useDateChangeRequests() {
   });
 }
 
-/* Demo data for fallback */
-const DEMO_APPROVALS: Task[] = [
-  { id: 'a1', title: 'Gold rate post (proof: Instagram screenshot)', status: 'submitted', timing_type: 'repeating', importance: 'normal', submitted_at: new Date(Date.now() - 3600000).toISOString() } as Task,
-  { id: 'a2', title: 'Morning cash count (₹4,52,300)', status: 'submitted', timing_type: 'repeating', importance: 'normal', submitted_at: new Date(Date.now() - 7200000).toISOString() } as Task,
-  { id: 'a3', title: 'Diwali showcase photo', status: 'submitted', timing_type: 'dated', importance: 'important', submitted_at: new Date(Date.now() - 1800000).toISOString() } as Task,
-];
-
-const DEMO_DATE_REQUESTS = [
-  { id: 'd1', task: { title: 'Payment list for October', timing_type: 'dated' }, reason: 'Supplier delayed invoice', old_due_at: '2026-11-15', new_due_at: '2026-11-20', created_at: new Date().toISOString() },
-  { id: 'd2', task: { title: 'Interior redesign quote', timing_type: 'dated' }, reason: 'Waiting for vendor visit', old_due_at: '2026-11-12', new_due_at: '2026-11-18', created_at: new Date().toISOString() },
-];
-
 export default function ApprovalsPage() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<ApprovalTab>('work');
-  const { data: remoteApprovals, isLoading: loadingApprovals } = usePendingApprovals();
-  const { data: remoteDateRequests, isLoading: loadingDates } = useDateChangeRequests();
+  const { data: approvals = [], isLoading: loadingApprovals } = usePendingApprovals();
+  const { data: dateRequests = [], isLoading: loadingDates } = useDateChangeRequests();
   const transition = useTransitionTask();
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
-
-  const approvals = (remoteApprovals && remoteApprovals.length > 0) ? remoteApprovals : DEMO_APPROVALS;
-  const dateRequests = (remoteDateRequests && remoteDateRequests.length > 0) ? remoteDateRequests : DEMO_DATE_REQUESTS;
 
   const tabs: { key: ApprovalTab; label: string; icon: React.ElementType; count: number }[] = [
     { key: 'work', label: 'Work Approvals', icon: Check, count: approvals.length },
@@ -94,6 +89,7 @@ export default function ApprovalsPage() {
 
   const handleDateDecision = async (requestId: string, approved: boolean) => {
     await supabase.rpc('decide_date_change', { p_request_id: requestId, p_approved: approved });
+    queryClient.invalidateQueries({ queryKey: ['date-change-requests'] });
   };
 
   return (
@@ -125,7 +121,12 @@ export default function ApprovalsPage() {
       {/* Work Approvals */}
       {activeTab === 'work' && (
         <div className="space-y-3">
-          {approvals.map((task) => (
+          {loadingApprovals && (
+            <div className="text-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin mx-auto text-[var(--color-ink)]/30" />
+            </div>
+          )}
+          {!loadingApprovals && approvals.map((task) => (
             <div key={task.id} className="bg-white rounded-xl border border-[#E5DDD3] p-4">
               <div className="flex items-start gap-3">
                 <div className="flex-1">
@@ -176,7 +177,7 @@ export default function ApprovalsPage() {
               </div>
             </div>
           ))}
-          {approvals.length === 0 && (
+          {!loadingApprovals && approvals.length === 0 && (
             <div className="text-center py-12 text-sm text-[var(--color-ink)]/40">No pending approvals 🎉</div>
           )}
         </div>
@@ -185,7 +186,12 @@ export default function ApprovalsPage() {
       {/* Date Change Requests */}
       {activeTab === 'dates' && (
         <div className="space-y-3">
-          {dateRequests.map((req: any) => (
+          {loadingDates && (
+            <div className="text-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin mx-auto text-[var(--color-ink)]/30" />
+            </div>
+          )}
+          {!loadingDates && dateRequests.map((req: any) => (
             <div key={req.id} className="bg-white rounded-xl border border-[#E5DDD3] p-4">
               <div className="flex items-start gap-3">
                 <div className="flex-1">
@@ -211,7 +217,7 @@ export default function ApprovalsPage() {
               </div>
             </div>
           ))}
-          {dateRequests.length === 0 && (
+          {!loadingDates && dateRequests.length === 0 && (
             <div className="text-center py-12 text-sm text-[var(--color-ink)]/40">No pending date change requests</div>
           )}
         </div>
