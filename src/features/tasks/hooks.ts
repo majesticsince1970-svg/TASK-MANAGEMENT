@@ -2,11 +2,23 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
 import { queryKeys } from '@/lib/queryKeys';
 import { useAuth } from '@/lib/auth';
-import type { Task, TaskStatus, TimingType, ProofType, Importance } from '@/types/database';
+import type {
+  Task,
+  TaskStatus,
+  TimingType,
+  ProofType,
+  Importance,
+  AvailabilityStatus,
+} from '@/types/database';
+
+/* ═══════════════════════════════════════════════════════════
+   QUERY HOOKS (unchanged)
+   ═══════════════════════════════════════════════════════════ */
 
 /* ─── Fetch tasks ─── */
 
 interface TaskFilters {
+  [key: string]: unknown;
   tab?: 'my' | 'assigned' | 'team' | 'watching' | 'pickup';
   status?: TaskStatus[];
   timing_type?: TimingType[];
@@ -76,6 +88,10 @@ export function useTask(taskId: string | null) {
   });
 }
 
+/* ═══════════════════════════════════════════════════════════
+   MUTATION HOOKS — rewritten to call Supabase RPCs
+   ═══════════════════════════════════════════════════════════ */
+
 /* ─── Create task ─── */
 
 interface CreateTaskInput {
@@ -89,15 +105,16 @@ interface CreateTaskInput {
   due_at?: string;
   review_on?: string;
   proof_type?: ProofType;
-  proof_rule?: Record<string, unknown>;
   requires_approval?: boolean;
   approver_id?: string;
-  report_back_to?: string;
   read_aloud?: boolean;
-  checklist_items?: { text: string; text_ml?: string; requires_photo?: boolean }[];
   helpers?: string[];
   watchers?: string[];
   source?: string;
+  checklist_items?: { text: string; text_ml?: string; requires_photo?: boolean }[];
+  milestones?: { title: string; due_at?: string; owner_id?: string }[];
+  is_draft?: boolean;
+  estimate_minutes?: number;
 }
 
 export function useCreateTask() {
@@ -106,40 +123,20 @@ export function useCreateTask() {
 
   return useMutation({
     mutationFn: async (input: CreateTaskInput) => {
-      const { data, error } = await supabase.from('tasks').insert({
-        ...input,
-        created_by: profile!.id,
-        status: input.owner_id ? 'new' : 'draft',
-        is_draft: !input.owner_id,
-        importance: input.importance || 'normal',
-        proof_type: input.proof_type || 'none',
-        source: input.source || 'owner',
-      }).select().single();
-
-      if (error) throw error;
-
-      // Create task event
-      await supabase.from('task_events').insert({
-        task_id: data.id,
-        actor_id: profile!.id,
-        type: 'created',
-        to_status: input.owner_id ? 'new' : 'draft',
+      const { data, error } = await supabase.rpc('create_task', {
+        payload: {
+          ...input,
+          created_by: profile!.id,
+          importance: input.importance || 'normal',
+          proof_type: input.proof_type || 'none',
+          source: input.source || 'owner',
+          is_draft: input.is_draft ?? !input.owner_id,
+        },
       });
 
-      // Create checklist items if any
-      if (input.checklist_items?.length) {
-        await supabase.from('task_checklist_items').insert(
-          input.checklist_items.map((item, i) => ({
-            task_id: data.id,
-            position: i,
-            text: item.text,
-            text_ml: item.text_ml,
-            requires_photo: item.requires_photo || false,
-          }))
-        );
-      }
-
-      return data as Task;
+      if (error) throw error;
+      const res = data as { task_id: string; status: string };
+      return { ...res, id: res.task_id };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
@@ -152,23 +149,20 @@ export function useCreateTask() {
 
 interface TransitionInput {
   taskId: string;
-  action: 'publish' | 'open' | 'start' | 'submit' | 'approve' | 'reject' | 'cancel' | 'block' | 'unblock' | 'resume';
+  action:
+    | 'publish'
+    | 'open'
+    | 'start'
+    | 'submit'
+    | 'approve'
+    | 'reject'
+    | 'cancel'
+    | 'block'
+    | 'unblock'
+    | 'resume';
   note?: string;
   reason?: string;
 }
-
-const TRANSITION_MAP: Record<string, { from: TaskStatus[]; to: TaskStatus }> = {
-  publish: { from: ['draft'], to: 'new' },
-  open: { from: ['new'], to: 'seen' },
-  start: { from: ['new', 'seen', 'sent_back'], to: 'in_progress' },
-  submit: { from: ['in_progress'], to: 'submitted' },
-  approve: { from: ['submitted'], to: 'done' },
-  reject: { from: ['submitted'], to: 'sent_back' },
-  cancel: { from: ['draft', 'new', 'seen', 'in_progress', 'blocked', 'submitted', 'sent_back'], to: 'cancelled' },
-  block: { from: ['in_progress'], to: 'blocked' },
-  unblock: { from: ['blocked'], to: 'in_progress' },
-  resume: { from: ['blocked'], to: 'in_progress' },
-};
 
 export function useTransitionTask() {
   const queryClient = useQueryClient();
@@ -176,38 +170,74 @@ export function useTransitionTask() {
 
   return useMutation({
     mutationFn: async ({ taskId, action, note, reason }: TransitionInput) => {
-      const transition = TRANSITION_MAP[action];
-      if (!transition) throw new Error(`Unknown action: ${action}`);
+      let result: { task_id: string; new_status?: string };
 
-      // Get current task
-      const { data: task, error: fetchErr } = await supabase
-        .from('tasks').select('status').eq('id', taskId).single();
-      if (fetchErr) throw fetchErr;
-
-      if (!transition.from.includes(task.status as TaskStatus)) {
-        throw new Error(`Cannot ${action} a task in status ${task.status}`);
+      switch (action) {
+        case 'approve': {
+          const { data, error } = await supabase.rpc('approve_task', {
+            p_task_id: taskId,
+            p_note: note || null,
+          });
+          if (error) throw error;
+          result = data as { task_id: string; new_status: string; next_task_id: string | null };
+          break;
+        }
+        case 'reject': {
+          if (!reason) throw new Error('Reason is required for rejection');
+          const { data, error } = await supabase.rpc('reject_task', {
+            p_task_id: taskId,
+            p_reason: reason,
+          });
+          if (error) throw error;
+          result = data as { task_id: string; new_status: string };
+          break;
+        }
+        case 'submit': {
+          const { data, error } = await supabase.rpc('submit_task', {
+            p_task_id: taskId,
+            p_proof: null,
+          });
+          if (error) throw error;
+          result = data as { task_id: string; new_status: string };
+          break;
+        }
+        case 'publish': {
+          const { data, error } = await supabase.rpc('publish_draft', {
+            p_task_id: taskId,
+          });
+          if (error) throw error;
+          result = data as { task_id: string; new_status: string };
+          break;
+        }
+        case 'open': {
+          const { data, error } = await supabase.rpc('mark_seen', {
+            p_task_id: taskId,
+          });
+          if (error) throw error;
+          result = data as { task_id: string; status: string; changed: boolean };
+          break;
+        }
+        case 'start':
+        case 'block':
+        case 'unblock':
+        case 'cancel':
+        case 'resume': {
+          const rpcAction = action === 'resume' ? 'unblock' : action;
+          const { data, error } = await supabase.rpc('transition_task', {
+            p_task_id: taskId,
+            p_action: rpcAction,
+            p_actor_id: profile!.id,
+            p_note: note || reason || null,
+          });
+          if (error) throw error;
+          result = data as { task_id: string; new_status: string };
+          break;
+        }
+        default:
+          throw new Error(`Unknown action: ${action}`);
       }
 
-      // Update task
-      const updates: Record<string, unknown> = { status: transition.to };
-      if (action === 'start') updates.started_at = new Date().toISOString();
-      if (action === 'submit') updates.submitted_at = new Date().toISOString();
-      if (action === 'approve') updates.completed_at = new Date().toISOString();
-
-      const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
-      if (error) throw error;
-
-      // Write event
-      await supabase.from('task_events').insert({
-        task_id: taskId,
-        actor_id: profile!.id,
-        type: action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : action === 'cancel' ? 'cancelled' : action === 'submit' ? 'submitted' : 'started',
-        from_status: task.status,
-        to_status: transition.to,
-        note: note || reason,
-      });
-
-      return { taskId, newStatus: transition.to };
+      return { taskId, newStatus: result.new_status ?? '' };
     },
     onSuccess: ({ taskId }) => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
@@ -230,13 +260,12 @@ interface SubmitProofInput {
 
 export function useSubmitProof() {
   const queryClient = useQueryClient();
-  const { profile } = useAuth();
 
   return useMutation({
     mutationFn: async ({ taskId, kind, value_numeric, value_text, rows, files }: SubmitProofInput) => {
       let storagePath: string | undefined;
 
-      // Upload files if any
+      // Upload files first (if any)
       if (files?.length) {
         for (const file of files) {
           const path = `proofs/${taskId}/${Date.now()}_${file.name}`;
@@ -246,30 +275,19 @@ export function useSubmitProof() {
         }
       }
 
-      // Insert proof record
-      const { error } = await supabase.from('proofs').insert({
-        task_id: taskId,
-        kind,
-        storage_path: storagePath,
-        value_numeric,
-        value_text,
-        rows: rows ? JSON.parse(JSON.stringify(rows)) : null,
-        submitted_by: profile!.id,
+      // Call RPC — handles proof insert + status transition + notifications
+      const { data, error } = await supabase.rpc('submit_task', {
+        p_task_id: taskId,
+        p_proof: {
+          kind,
+          storage_path: storagePath ?? null,
+          value_numeric: value_numeric ?? null,
+          value_text: value_text ?? null,
+          rows: rows ?? null,
+        },
       });
       if (error) throw error;
-
-      // Transition to submitted
-      await supabase.from('tasks').update({
-        status: 'submitted',
-        submitted_at: new Date().toISOString(),
-      }).eq('id', taskId);
-
-      await supabase.from('task_events').insert({
-        task_id: taskId,
-        actor_id: profile!.id,
-        type: 'submitted',
-        to_status: 'submitted',
-      });
+      return data as { task_id: string; new_status: string };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
@@ -281,31 +299,16 @@ export function useSubmitProof() {
 
 export function useRequestDateChange() {
   const queryClient = useQueryClient();
-  const { profile } = useAuth();
 
   return useMutation({
     mutationFn: async ({ taskId, newDueAt, reason }: { taskId: string; newDueAt: string; reason: string }) => {
-      const { data: task } = await supabase.from('tasks').select('due_at').eq('id', taskId).single();
-
-      const { error } = await supabase.from('date_change_requests').insert({
-        task_id: taskId,
-        requested_by: profile!.id,
-        old_due_at: task?.due_at,
-        new_due_at: newDueAt,
-        reason,
+      const { data, error } = await supabase.rpc('request_date_change', {
+        p_task_id: taskId,
+        p_new_due: newDueAt,
+        p_reason: reason,
       });
       if (error) throw error;
-
-      await supabase.from('task_events').insert({
-        task_id: taskId,
-        actor_id: profile!.id,
-        type: 'date_change_requested',
-        note: reason,
-      });
-
-      await supabase.from('tasks').update({
-        date_change_count: (task as any)?.date_change_count + 1 || 1,
-      }).eq('id', taskId);
+      return data as { request_id: string; task_id: string };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
@@ -322,26 +325,211 @@ export function useClaimTask() {
 
   return useMutation({
     mutationFn: async (taskId: string) => {
-      // Atomic claim — first one wins
-      const { error } = await supabase
-        .from('tasks')
-        .update({ owner_id: profile!.id, status: 'seen' })
-        .eq('id', taskId)
-        .is('owner_id', null);
-      if (error) throw error;
-
-      await supabase.from('task_events').insert({
-        task_id: taskId,
-        actor_id: profile!.id,
-        type: 'claimed',
-        to_status: 'seen',
+      const { data, error } = await supabase.rpc('claim_pool_task', {
+        p_task_id: taskId,
+        p_actor_id: profile!.id,
       });
+      if (error) throw error;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
     },
   });
 }
+
+/* ═══════════════════════════════════════════════════════════
+   NEW HOOKS — wrappers for newly-available RPCs
+   ═══════════════════════════════════════════════════════════ */
+
+/* ─── Snooze flexible task ─── */
+
+export function useSnoozeFlexible() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ taskId, days }: { taskId: string; days: number }) => {
+      const { data, error } = await supabase.rpc('snooze_flexible', {
+        p_task_id: taskId,
+        p_days: days,
+      });
+      if (error) throw error;
+      return data as { task_id: string; new_review_on: string; snooze_count: number };
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.task(result.task_id) });
+    },
+  });
+}
+
+/* ─── Change due date (manager) ─── */
+
+export function useChangeDueDate() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ taskId, newDue, reason }: { taskId: string; newDue: string; reason: string }) => {
+      const { data, error } = await supabase.rpc('change_due_date', {
+        p_task_id: taskId,
+        p_new_due: newDue,
+        p_reason: reason,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    },
+  });
+}
+
+/* ─── Handover tasks ─── */
+
+export function useHandoverTasks() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      fromUser,
+      mapping,
+    }: {
+      fromUser: string;
+      mapping: { task_id: string; to_user_id: string }[];
+    }) => {
+      const { data, error } = await supabase.rpc('handover_tasks', {
+        p_from_user: fromUser,
+        p_mapping: mapping,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    },
+  });
+}
+
+/* ─── Bulk create tasks ─── */
+
+export function useBulkCreateTasks() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      payload,
+      userIds,
+    }: {
+      payload: Record<string, unknown>;
+      userIds: string[];
+    }) => {
+      const { data, error } = await supabase.rpc('bulk_create_tasks', {
+        p_payload: payload,
+        p_user_ids: userIds,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    },
+  });
+}
+
+/* ─── Complete milestone ─── */
+
+export function useCompleteMilestone() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      milestoneId,
+      proofPath,
+    }: {
+      milestoneId: string;
+      proofPath?: string;
+    }) => {
+      const { data, error } = await supabase.rpc('complete_milestone', {
+        p_milestone_id: milestoneId,
+        p_proof_path: proofPath ?? null,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    },
+  });
+}
+
+/* ─── Set availability ─── */
+
+export function useSetAvailability() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      status,
+      until,
+    }: {
+      status: AvailabilityStatus;
+      until?: string;
+    }) => {
+      const { data, error } = await supabase.rpc('set_availability', {
+        p_status: status,
+        p_until: until ?? null,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile'] });
+    },
+  });
+}
+
+/* ─── Acknowledge announcement ─── */
+
+export function useAckAnnouncement() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (announcementId: string) => {
+      const { data, error } = await supabase.rpc('ack_announcement', {
+        p_announcement_id: announcementId,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['announcements'] });
+    },
+  });
+}
+
+/* ─── Publish draft ─── */
+
+export function usePublishDraft() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (taskId: string) => {
+      const { data, error } = await supabase.rpc('publish_draft', {
+        p_task_id: taskId,
+      });
+      if (error) throw error;
+      return data as { task_id: string; new_status: string };
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.task(result.task_id) });
+    },
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   QUERY HOOKS (unchanged)
+   ═══════════════════════════════════════════════════════════ */
 
 /* ─── Task events (history) ─── */
 
@@ -398,4 +586,3 @@ export function useAddComment() {
     },
   });
 }
-

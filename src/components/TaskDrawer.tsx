@@ -297,7 +297,7 @@ export function TaskDrawer({ taskId, onClose }: TaskDrawerProps) {
               {/* Tabs */}
               <div className="flex border-b border-[#E5DDD3]">
                 {([
-                  { key: 'details' as DrawerTab, label: 'Details', icon: ChevronRight },
+                  { key: 'details' as DrawerTab, label: 'Details', icon: ChevronRight, count: undefined },
                   { key: 'comments' as DrawerTab, label: 'Comments', icon: MessageSquare, count: comments?.length },
                   { key: 'history' as DrawerTab, label: 'History', icon: History, count: events?.length },
                 ] as const).map((t) => (

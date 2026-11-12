@@ -10,7 +10,8 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-export const supabase = createClient<Database>(
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const supabase = createClient<any>(
   supabaseUrl || 'http://localhost:54321',
   supabaseAnonKey || 'placeholder-key'
 );

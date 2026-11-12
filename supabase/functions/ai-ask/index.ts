@@ -56,6 +56,85 @@ const TOOLS = [
           },
         },
       },
+      {
+        name: 'get_overdue_tasks',
+        description: 'Get all tasks that are overdue — not done/cancelled and past their due date',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            department_id: { type: 'STRING', description: 'Optional department UUID to filter' },
+            owner_id: { type: 'STRING', description: 'Optional owner UUID to filter' },
+            limit: { type: 'INTEGER', description: 'Max results (default 20)' },
+          },
+        },
+      },
+      {
+        name: 'get_department_summary',
+        description: 'Get a summary of task counts by status for a specific department',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            department_id: { type: 'STRING', description: 'UUID of the department (required)' },
+          },
+          required: ['department_id'],
+        },
+      },
+      {
+        name: 'get_workload',
+        description: 'Get active task counts and overdue counts per user. If user_id is provided, returns only that user; otherwise returns all users.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            user_id: { type: 'STRING', description: 'Optional UUID of a specific user' },
+          },
+        },
+      },
+      {
+        name: 'get_eod_status',
+        description: 'Get end-of-day status for today (IST): tasks completed today, still pending, and overdue',
+        parameters: {
+          type: 'OBJECT',
+          properties: {},
+        },
+      },
+      {
+        name: 'get_pending_approvals',
+        description: 'Get tasks in submitted status that are waiting for approval',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            approver_id: { type: 'STRING', description: 'Optional UUID of the approver to filter by' },
+          },
+        },
+      },
+      {
+        name: 'search_tasks',
+        description: 'Search tasks by keyword in title or description. Optionally filter by status and/or department.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            query: { type: 'STRING', description: 'Search keyword (matched against title and description)' },
+            status: { type: 'STRING', description: 'Optional status filter' },
+            department_id: { type: 'STRING', description: 'Optional department UUID filter' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'draft_task',
+        description: 'Create a draft task that the owner can review before activation. Use this when the user asks to create or add a task.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            title: { type: 'STRING', description: 'Task title' },
+            description: { type: 'STRING', description: 'Task description' },
+            timing_type: { type: 'STRING', description: 'Timing type: daily, weekly, monthly, or one_time' },
+            department_id: { type: 'STRING', description: 'Optional department UUID' },
+            owner_id: { type: 'STRING', description: 'Optional owner UUID' },
+          },
+          required: ['title', 'description', 'timing_type'],
+        },
+      },
     ],
   },
 ];
@@ -152,6 +231,161 @@ async function executeTool(
       }
 
       return { result, source: 'profiles table' };
+    }
+
+    case 'get_overdue_tasks': {
+      let query = supabase
+        .from('tasks')
+        .select('id, title, status, owner_id, department_id, due_at, timing_type, importance')
+        .not('status', 'in', '("done","cancelled")')
+        .lt('due_at', new Date().toISOString())
+        .order('due_at', { ascending: true })
+        .limit(args.limit || 20);
+
+      if (args.department_id) query = query.eq('department_id', args.department_id);
+      if (args.owner_id) query = query.eq('owner_id', args.owner_id);
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return { result: data || [], source: 'tasks (overdue)' };
+    }
+
+    case 'get_department_summary': {
+      const statuses = ['new', 'seen', 'in_progress', 'blocked', 'submitted', 'done'];
+      const by_status: Record<string, number> = {};
+      let total = 0;
+
+      for (const s of statuses) {
+        const { count } = await supabase
+          .from('tasks')
+          .select('id', { count: 'exact', head: true })
+          .eq('department_id', args.department_id)
+          .eq('status', s);
+        by_status[s] = count || 0;
+        total += count || 0;
+      }
+
+      const { data: dept } = await supabase
+        .from('departments')
+        .select('name, name_ml')
+        .eq('id', args.department_id)
+        .single();
+
+      return {
+        result: { department_name: dept?.name || args.department_id, total, by_status },
+        source: 'department summary',
+      };
+    }
+
+    case 'get_workload': {
+      let profilesQuery = supabase.from('profiles').select('id, full_name, role');
+      if (args.user_id) profilesQuery = profilesQuery.eq('id', args.user_id);
+      const { data: profiles, error } = await profilesQuery;
+      if (error) throw error;
+
+      const results = [];
+      const now = new Date().toISOString();
+      for (const p of profiles || []) {
+        const { count: active } = await supabase
+          .from('tasks')
+          .select('id', { count: 'exact', head: true })
+          .eq('owner_id', p.id)
+          .in('status', ['new', 'seen', 'in_progress', 'blocked', 'submitted']);
+
+        const { count: overdue } = await supabase
+          .from('tasks')
+          .select('id', { count: 'exact', head: true })
+          .eq('owner_id', p.id)
+          .in('status', ['new', 'seen', 'in_progress', 'blocked'])
+          .lt('due_at', now);
+
+        results.push({
+          user_id: p.id,
+          full_name: p.full_name,
+          active_task_count: active || 0,
+          overdue_count: overdue || 0,
+        });
+      }
+
+      return { result: results, source: 'workload query' };
+    }
+
+    case 'get_eod_status': {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const { count: completedToday } = await supabase
+        .from('tasks')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'done')
+        .gte('completed_at', todayStart.toISOString());
+
+      const { count: pending } = await supabase
+        .from('tasks')
+        .select('id', { count: 'exact', head: true })
+        .in('status', ['new', 'seen', 'in_progress', 'submitted', 'blocked']);
+
+      const { count: overdue } = await supabase
+        .from('tasks')
+        .select('id', { count: 'exact', head: true })
+        .in('status', ['new', 'seen', 'in_progress', 'blocked'])
+        .lt('due_at', new Date().toISOString());
+
+      return {
+        result: {
+          date: new Date().toISOString().split('T')[0],
+          completed_today: completedToday || 0,
+          pending: pending || 0,
+          overdue: overdue || 0,
+        },
+        source: 'eod status',
+      };
+    }
+
+    case 'get_pending_approvals': {
+      let query = supabase
+        .from('tasks')
+        .select('id, title, owner_id, submitted_at, department_id, timing_type')
+        .eq('status', 'submitted')
+        .order('submitted_at', { ascending: true });
+
+      if (args.approver_id) query = query.eq('approver_id', args.approver_id);
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return { result: data || [], source: 'pending approvals' };
+    }
+
+    case 'search_tasks': {
+      let query = supabase
+        .from('tasks')
+        .select('id, title, status, owner_id, department_id, timing_type, due_at')
+        .or(`title.ilike.%${args.query}%,description.ilike.%${args.query}%`)
+        .limit(10);
+
+      if (args.status) query = query.eq('status', args.status);
+      if (args.department_id) query = query.eq('department_id', args.department_id);
+
+      const { data, error } = await query;
+      if (error) throw error;
+      return { result: data || [], source: 'task search' };
+    }
+
+    case 'draft_task': {
+      const { data, error } = await supabase.rpc('create_task', {
+        payload: {
+          title: args.title,
+          description: args.description,
+          timing_type: args.timing_type,
+          department_id: args.department_id || null,
+          owner_id: args.owner_id || null,
+          is_draft: true,
+          source: 'ai',
+        },
+      });
+
+      if (error) throw error;
+      return { result: data, source: 'create_task RPC (draft)' };
     }
 
     default:
