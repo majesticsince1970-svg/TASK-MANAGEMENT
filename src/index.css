@@ -1,0 +1,81 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+Malayalam:wght@300;400;500;600;700&display=swap");
+@import "tailwindcss";
+
+/* ── Design System Tokens ─────────────────────────────────────── */
+:root {
+  /* Brand */
+  --color-ivory: #FBF7F1;
+  --color-ink: #1E1215;
+  --color-maroon: #7A1F2B;
+  --color-gold: #D4A853;
+  --color-gold-text: #8A6420;
+
+  /* Timing */
+  --color-urgent: #C62828;
+  --color-dated: #B8862B;
+  --color-long: #7A1F2B;
+  --color-flexible: #8A7A72;
+  --color-repeating: #5B3FBF;
+
+  /* Semantic */
+  --color-success: #2E7D4F;
+  --color-warning: #C77A1E;
+  --color-ai: #5B3FBF;
+
+  /* Dark (TV / Control Room) */
+  --color-dark-bg: #120A0C;
+  --color-dark-surface: #1E1215;
+
+  /* Typography */
+  --font-sans: 'Inter', 'Noto Sans Malayalam', system-ui, sans-serif;
+  --font-ml: 'Noto Sans Malayalam', 'Inter', sans-serif;
+
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--color-ink);
+  background-color: var(--color-ivory);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Smooth Scrolling ─────────────────────────────────────────── */
+html {
+  scroll-behavior: smooth;
+}
+
+/* ── Base Reset ───────────────────────────────────────────────── */
+body {
+  margin: 0;
+  min-height: 100dvh;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* ── Utility Layer ────────────────────────────────────────────── */
+@layer base {
+  #root {
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Focus ring for accessibility */
+  :focus-visible {
+    outline: 2px solid var(--color-maroon);
+    outline-offset: 2px;
+  }
+
+  /* Selection styling */
+  ::selection {
+    background-color: var(--color-gold);
+    color: var(--color-ink);
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "app": { "name": "Majestic Ops", "tagline": "Task Management for Majestic Jewellers" },
+  "nav": { "home": "Home", "tasks": "Tasks", "approvals": "Approvals", "routines": "Routines", "templates": "Templates", "projects": "Projects", "ai": "AI Manager", "live": "Live Board", "people": "People", "messages": "Messages", "reports": "Reports", "eod": "End of Day", "notifications": "Notifications", "settings": "Settings", "profile": "My Profile" },
+  "auth": { "login": "Log In", "email": "Email", "password": "Password", "pin": "Enter PIN", "forgot": "Forgot password?", "logging_in": "Logging in...", "invalid": "Invalid credentials", "logout": "Log Out" },
+  "common": { "save": "Save", "cancel": "Cancel", "delete": "Delete", "edit": "Edit", "create": "Create", "search": "Search...", "loading": "Loading...", "error": "Something went wrong", "retry": "Retry", "no_results": "No results found", "offline": "You are offline", "coming_soon": "Coming soon" },
+  "task": { "new": "New Task", "urgent": "Urgent", "dated": "Dated", "long": "Long task", "flexible": "Flexible", "repeating": "Repeating" },
+  "availability": { "on_duty": "On Duty", "on_break": "On Break", "with_customer": "With Customer", "on_leave": "On Leave", "off_shift": "Off Shift" },
+  "settings": { "title": "Settings", "shop": "Shop", "departments": "Departments", "users": "Users & Roles", "holidays": "Holidays", "shifts": "Shifts", "reminders": "Reminders & Escalation", "ai": "AI Manager", "voice": "Voice", "privacy": "Privacy & Retention" }
+}
