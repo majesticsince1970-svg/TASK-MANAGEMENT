@@ -4,6 +4,7 @@ import '@/i18n';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { useRealtimeInvalidation } from '@/lib/realtime';
+import { ToastProvider } from '@/components/ui/toast';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -55,7 +56,9 @@ function AuthListener({ children }: { children: ReactNode }) {
 export function Providers({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthListener>{children}</AuthListener>
+      <ToastProvider>
+        <AuthListener>{children}</AuthListener>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }
