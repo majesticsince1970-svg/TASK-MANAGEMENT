@@ -22,7 +22,7 @@ export default function HomePage() {
 
   const isManager = profile?.role === 'owner' || profile?.role === 'director';
   const isSenior = profile?.senior_mode;
-  const topTasks = sortByWorkOrder(myTasks as any).slice(0, 5);
+  const topTasks = workOrderSort(myTasks as any).slice(0, 5);
 
   // Senior mode: 3 big buttons
   if (isSenior) {
