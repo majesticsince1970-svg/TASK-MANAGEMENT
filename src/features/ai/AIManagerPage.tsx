@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
+import { supabase } from '@/lib/supabase';
 import { useAiAlerts, useActionAiAlert, usePeople, useDashboardStats } from '@/lib/hooks';
 import { useTasks, useCreateTask } from '@/features/tasks/hooks';
 import { cn } from '@/lib/utils';
@@ -9,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import {
   Bot, AlertTriangle, Lightbulb, TrendingUp, CheckCircle, Clock,
   MessageSquare, Send, Volume2, ChevronRight, X, Bell,
-  Mic, MicOff, Loader2, Plus, Square, VolumeX
+  Mic, MicOff, Loader2, Plus, Square, VolumeX, Edit3, Check, Trash2
 } from 'lucide-react';
 import { formatDistanceToNow, addDays, addHours, format } from 'date-fns';
 import type { TimingType, ProofType, Profile } from '@/types/database';
@@ -33,7 +34,45 @@ const DEMO_DIGESTS = [
   { id: 'd2', date: 'Yesterday', summary: '12 tasks completed, 1 overdue. All routines ran on time.', highlights: ['100% routine compliance', 'Jelisha earned 45 points', 'No critical alerts'] },
 ];
 
-/* ─── Voice command parser ─── */
+/* ─── Malayalam TTS helper ─── */
+
+function speakText(text: string, lang: 'en-IN' | 'ml-IN' = 'en-IN') {
+  if (!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = lang;
+  utterance.rate = 0.9;
+  utterance.pitch = 1;
+  const voices = window.speechSynthesis.getVoices();
+  const matchVoice = voices.find(v => v.lang.startsWith(lang.split('-')[0]));
+  if (matchVoice) utterance.voice = matchVoice;
+  window.speechSynthesis.speak(utterance);
+}
+
+function stopSpeaking() {
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+}
+
+/* ─── Gemini API caller (via Supabase Edge Function) ─── */
+
+async function callGeminiAI(
+  question: string,
+  userId: string,
+): Promise<{ answer: string; sources: string[] }> {
+  try {
+    const { data, error } = await supabase.functions.invoke('ai-ask', {
+      body: { question, user_id: userId },
+    });
+    if (error) throw error;
+    return { answer: data?.answer || 'No response from AI.', sources: data?.sources || [] };
+  } catch (err: any) {
+    console.warn('Edge function call failed, falling back to local:', err.message);
+    // Return null to signal fallback needed
+    throw err;
+  }
+}
+
+/* ─── Local fallback parser (used when Gemini is unavailable) ─── */
 
 interface ParsedCommand {
   intent: 'create_task' | 'query_pending' | 'query_overdue' | 'query_person' | 'query_status' | 'greeting' | 'unknown';
@@ -47,15 +86,16 @@ interface ParsedCommand {
 }
 
 function parseVoiceCommand(text: string, people: Profile[]): ParsedCommand {
-  const lower = text.toLowerCase();
+  const lower = text.toLowerCase().trim();
   const result: ParsedCommand = { intent: 'unknown', raw: text };
 
-  // Detect Malayalam or English
-  const isMalayalam = /[\u0D00-\u0D7F]/.test(text);
-
-  // --- Greetings ---
-  if (/^(hi|hello|hey|namaskaram|hai|നമസ്കാരം|ഹായ്|ഹലോ)[\s,!.]*$/i.test(lower.trim()) ||
-      /^(hi|hello|hey)\s*(ai|manager|sir|madam)/i.test(lower)) {
+  // --- Greetings (strict match - must be ONLY a greeting, nothing more) ---
+  const greetingOnly = lower.replace(/[,!.\s]+/g, ' ').trim();
+  const greetingWords = ['hi', 'hello', 'hey', 'namaskaram', 'hai', 'നമസ്കാരം', 'ഹായ്', 'ഹലോ',
+    'hi ai', 'hi ai manager', 'hello ai', 'hello ai manager', 'hey ai', 'hey ai manager',
+    'hi manager', 'hello manager', 'hey manager', 'hi sir', 'hello sir', 'good morning',
+    'good afternoon', 'good evening'];
+  if (greetingWords.includes(greetingOnly)) {
     result.intent = 'greeting';
     return result;
   }
@@ -68,7 +108,6 @@ function parseVoiceCommand(text: string, people: Profile[]): ParsedCommand {
   ];
   if (pendingPatterns.some(p => p.test(lower))) {
     result.intent = 'query_pending';
-    // Check if asking about a specific person
     for (const p of people) {
       if (lower.includes(p.full_name.toLowerCase()) || (p.full_name_ml && text.includes(p.full_name_ml))) {
         result.assigneeName = p.full_name;
@@ -80,7 +119,7 @@ function parseVoiceCommand(text: string, people: Profile[]): ParsedCommand {
   }
 
   // --- Query: overdue ---
-  const overduePatterns = [/overdue/, /late/, /missed/, /past\s*due/, /കാലാവധി.*കഴിഞ്ഞ/, /ലേറ്റ്/];
+  const overduePatterns = [/overdue/, /late\s+tasks?/, /missed\s+deadline/, /past\s*due/, /കാലാവധി.*കഴിഞ്ഞ/, /ലേറ്റ്/];
   if (overduePatterns.some(p => p.test(lower))) {
     result.intent = 'query_overdue';
     return result;
@@ -101,31 +140,26 @@ function parseVoiceCommand(text: string, people: Profile[]): ParsedCommand {
   const createPatterns = [
     /(?:assign|create|add|give|send|make|set\s*up|need\s+to|wants?\s+to|should)\s+(.+)/i,
     /(.+?)\s+(?:assign|create|give|send)\s+(?:to|for)\s+/i,
-    /(?:task|work|job)[:]\s*(.+)/i,
-    // Malayalam patterns
+    /(?:task|work|job)[:]?\s*(.+)/i,
     /(.+?)\s*(?:ചെയ്യണം|ചെയ്യൂ|അസൈൻ|ടാസ്ക്|നൽകൂ|കൊടുക്കൂ)/,
-    /(?:ടാസ്ക്|ജോലി|പണി)[:]\s*(.+)/,
+    /(?:ടാസ്ക്|ജോലി|പണി)[:]?\s*(.+)/,
   ];
 
-  // If none of the specific patterns match, try to detect task creation from context
   const hasCreateIntent = createPatterns.some(p => p.test(text)) ||
     lower.includes('update') || lower.includes('prepare') || lower.includes('check') ||
-    lower.includes('send') || lower.includes('complete') || lower.includes('submit') ||
-    lower.includes('review') || lower.includes('call') || lower.includes('follow up') ||
-    lower.includes('payment') || lower.includes('list') || lower.includes('report');
+    lower.includes('complete') || lower.includes('submit') ||
+    lower.includes('review') || lower.includes('follow up') ||
+    lower.includes('payment') || lower.includes('report');
 
   if (hasCreateIntent) {
     result.intent = 'create_task';
 
-    // Extract title — use the main content
     let title = text;
-    // Remove common prefixes
     title = title.replace(/^(hi|hello|hey)\s*(ai|manager)?\s*,?\s*/i, '');
     title = title.replace(/^(i\s+)?(need\s+to|want\s+to|please|can\s+you)\s*/i, '');
     title = title.replace(/^(assign|create|add|make)\s*(a\s+)?(new\s+)?(task\s*)?(for|to)?\s*/i, '');
     result.title = title.charAt(0).toUpperCase() + title.slice(1);
 
-    // Detect assignee by matching people names
     for (const p of people) {
       const nameLower = p.full_name.toLowerCase();
       const parts = nameLower.split(' ');
@@ -143,21 +177,16 @@ function parseVoiceCommand(text: string, people: Profile[]): ParsedCommand {
       }
     }
 
-    // Detect department
     if (/account/i.test(lower)) result.department = 'Accounts';
     else if (/sales|floor|shop/i.test(lower)) result.department = 'Sales Floor';
     else if (/creative|design|photo|video|reel/i.test(lower)) result.department = 'Creative';
     else if (/hr|admin/i.test(lower)) result.department = 'HR and Admin';
 
-    // Detect timing
     if (/urgent|immediately|right\s+now|asap|അടിയന്തര/i.test(lower)) result.timing = 'urgent';
-    else if (/today|ഇന്ന്/i.test(lower)) result.timing = 'dated';
     else result.timing = 'dated';
 
-    // Detect importance
     if (/important|critical|priority|urgent|പ്രധാന/i.test(lower)) result.importance = 'important';
 
-    // Detect proof type
     if (/photo|picture|image|ഫോട്ടോ/i.test(lower)) result.proofType = 'photo';
     else if (/payment|amount|number|₹|രൂപ/i.test(lower)) result.proofType = 'payment_list';
     else if (/list|ലിസ്റ്റ്/i.test(lower)) result.proofType = 'text_note';
@@ -169,24 +198,98 @@ function parseVoiceCommand(text: string, people: Profile[]): ParsedCommand {
   return result;
 }
 
-/* ─── Malayalam TTS helper ─── */
+/* ─── Local fallback response builder ─── */
 
-function speakText(text: string, lang: 'en-IN' | 'ml-IN' = 'en-IN') {
-  if (!('speechSynthesis' in window)) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = lang;
-  utterance.rate = 0.9;
-  utterance.pitch = 1;
-  // Try to find a matching voice
-  const voices = window.speechSynthesis.getVoices();
-  const matchVoice = voices.find(v => v.lang.startsWith(lang.split('-')[0]));
-  if (matchVoice) utterance.voice = matchVoice;
-  window.speechSynthesis.speak(utterance);
-}
+function buildLocalResponse(
+  command: ParsedCommand,
+  allTasks: any[],
+  people: Profile[],
+  openAlerts: any[],
+  language: 'en-IN' | 'ml-IN',
+): string {
+  switch (command.intent) {
+    case 'greeting': {
+      const pendingCount = allTasks.length;
+      const overdueCount = allTasks.filter((t: any) => t.due_at && new Date(t.due_at) < new Date() && t.status !== 'done').length;
+      if (language === 'ml-IN') {
+        speakText(`നമസ്കാരം! ${pendingCount} ടാസ്ക്കുകൾ ആക്ടീവ് ആണ്. ${overdueCount} ഓവർഡ്യൂ ആണ്.`, 'ml-IN');
+      } else {
+        speakText(`Hello! You have ${pendingCount} active tasks and ${overdueCount} overdue.`, 'en-IN');
+      }
+      return `👋 Hello! Here's a quick overview:\n\n📋 **${pendingCount} active tasks** across the team\n⚠️ **${overdueCount} overdue** tasks\n🔔 **${openAlerts.length} AI alerts** pending\n\nWhat would you like to do?`;
+    }
 
-function stopSpeaking() {
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    case 'query_pending': {
+      const pending = allTasks.filter((t: any) => ['new', 'seen', 'in_progress'].includes(t.status));
+      const grouped: Record<string, number> = {};
+      pending.forEach((t: any) => { grouped[t.status] = (grouped[t.status] || 0) + 1; });
+      let response = `📋 **${pending.length} pending tasks:**\n\n`;
+      if (grouped.new) response += `• 🆕 New (unread): **${grouped.new}**\n`;
+      if (grouped.seen) response += `• 👁️ Seen: **${grouped.seen}**\n`;
+      if (grouped.in_progress) response += `• 🔄 In Progress: **${grouped.in_progress}**\n`;
+      response += `\nTop 5 pending:\n`;
+      pending.slice(0, 5).forEach((t: any, i: number) => {
+        response += `${i + 1}. **${t.title}** — ${t.status.replace('_', ' ')}\n`;
+      });
+      if (language === 'ml-IN') {
+        speakText(`${pending.length} ടാസ്ക്കുകൾ ബാക്കിയുണ്ട്`, 'ml-IN');
+      } else {
+        speakText(`You have ${pending.length} pending tasks.`, 'en-IN');
+      }
+      return response;
+    }
+
+    case 'query_person': {
+      const person = people.find(p => p.full_name === command.assigneeName);
+      if (person) {
+        const personTasks = allTasks.filter((t: any) => t.owner_id === person.id);
+        const active = personTasks.filter((t: any) => ['new', 'seen', 'in_progress'].includes(t.status));
+        let response = `👤 **${person.full_name}** — ${person.job_title || person.role}\n\n`;
+        response += `📋 Active tasks: **${active.length}**\n`;
+        response += `⭐ Points: **${person.points}**\n`;
+        response += `📍 Status: **${person.availability.replace('_', ' ')}**\n\n`;
+        if (active.length > 0) {
+          response += `Current tasks:\n`;
+          active.slice(0, 5).forEach((t: any, i: number) => {
+            response += `${i + 1}. ${t.title}\n`;
+          });
+        }
+        return response;
+      }
+      return `I couldn't find anyone named "${command.assigneeName}". Available team members: ${people.map(p => p.full_name).join(', ')}`;
+    }
+
+    case 'query_overdue': {
+      const overdue = allTasks.filter((t: any) => t.due_at && new Date(t.due_at) < new Date());
+      let response = `⚠️ **${overdue.length} overdue tasks:**\n\n`;
+      overdue.slice(0, 8).forEach((t: any, i: number) => {
+        const owner = people.find(p => p.id === t.owner_id);
+        response += `${i + 1}. **${t.title}** — ${owner?.full_name || 'Unassigned'} (${formatDistanceToNow(new Date(t.due_at), { addSuffix: true })})\n`;
+      });
+      if (overdue.length === 0) response = '✅ No overdue tasks! Everything is on track.';
+      return response;
+    }
+
+    case 'query_status': {
+      const total = allTasks.length;
+      const overdue = allTasks.filter((t: any) => t.due_at && new Date(t.due_at) < new Date()).length;
+      const inProgress = allTasks.filter((t: any) => t.status === 'in_progress').length;
+      const submitted = allTasks.filter((t: any) => t.status === 'submitted').length;
+      const onDuty = people.filter(p => p.availability === 'on_duty').length;
+
+      let response = `📊 **Today's Status:**\n\n`;
+      response += `📋 Active tasks: **${total}**\n`;
+      response += `🔄 In progress: **${inProgress}**\n`;
+      response += `📥 Awaiting review: **${submitted}**\n`;
+      response += `⚠️ Overdue: **${overdue}**\n`;
+      response += `👥 Staff on duty: **${onDuty}/${people.length}**\n`;
+      response += `🔔 AI alerts: **${openAlerts.length}**\n`;
+      return response;
+    }
+
+    default:
+      return `🤔 I didn't quite understand that. You can try:\n\n• **"What's pending?"** — See pending tasks\n• **"Assign [task] to [person]"** — Create a task by voice\n• **"Today's status"** — Get a summary\n• **"What's overdue?"** — See late tasks\n\nOr speak in Malayalam — I understand that too! 🇮🇳`;
+  }
 }
 
 /* ─── Main Component ─── */
@@ -204,8 +307,15 @@ export default function AIManagerPage() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [language, setLanguage] = useState<'en-IN' | 'ml-IN'>('en-IN');
+
+  // ─── Draft message state (confirmation flow) ─── 
+  const [draftMessage, setDraftMessage] = useState('');
+  const [interimText, setInterimText] = useState('');
+  const [isEditing, setIsEditing] = useState(false);
+
   const recognitionRef = useRef<any>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const draftInputRef = useRef<HTMLTextAreaElement>(null);
 
   const { data: remoteAlerts } = useAiAlerts('open');
   const actionAlert = useActionAiAlert();
@@ -232,7 +342,18 @@ export default function AIManagerPage() {
     return () => clearInterval(check);
   }, []);
 
-  /* ─── Voice recognition ─── */
+  // Focus draft input when editing
+  useEffect(() => {
+    if (isEditing && draftInputRef.current) {
+      draftInputRef.current.focus();
+      draftInputRef.current.setSelectionRange(
+        draftInputRef.current.value.length,
+        draftInputRef.current.value.length
+      );
+    }
+  }, [isEditing]);
+
+  /* ─── Voice recognition (continuous with interim results) ─── */
 
   const startListening = useCallback(() => {
     const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
@@ -241,25 +362,58 @@ export default function AIManagerPage() {
       return;
     }
 
+    // Clear any previous draft
+    setDraftMessage('');
+    setInterimText('');
+
     const recognition = new SpeechRecognition();
     recognition.lang = language;
-    recognition.interimResults = false;
-    recognition.continuous = false;
+    recognition.interimResults = true;     // Show live transcription
+    recognition.continuous = true;         // Don't stop on first pause
     recognition.maxAlternatives = 1;
 
-    recognition.onstart = () => setIsListening(true);
-    recognition.onend = () => setIsListening(false);
+    let finalTranscript = '';
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      finalTranscript = '';
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      setInterimText('');
+      // When recognition ends, if we have text, put it in the draft for confirmation
+      if (finalTranscript.trim()) {
+        setDraftMessage(finalTranscript.trim());
+      }
+    };
+
     recognition.onerror = (e: any) => {
       setIsListening(false);
-      if (e.error !== 'no-speech') {
+      setInterimText('');
+      if (e.error !== 'no-speech' && e.error !== 'aborted') {
         setChatMessages(prev => [...prev, { role: 'ai', text: `🎤 Mic error: ${e.error}. Please try again.` }]);
       }
     };
 
     recognition.onresult = (e: any) => {
-      const transcript = e.results[0][0].transcript;
-      setIsListening(false);
-      processMessage(transcript);
+      let interim = '';
+      let final = '';
+
+      for (let i = 0; i < e.results.length; i++) {
+        const transcript = e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          final += transcript + ' ';
+        } else {
+          interim += transcript;
+        }
+      }
+
+      if (final) {
+        finalTranscript = final.trim();
+        setDraftMessage(finalTranscript);
+      }
+      setInterimText(interim);
     };
 
     recognitionRef.current = recognition;
@@ -271,167 +425,126 @@ export default function AIManagerPage() {
     setIsListening(false);
   }, []);
 
-  /* ─── Process message (voice or typed) ─── */
+  /* ─── Confirm & send the draft message ─── */
+
+  const confirmAndSend = useCallback(() => {
+    const text = draftMessage.trim();
+    if (!text) return;
+    setDraftMessage('');
+    setInterimText('');
+    setIsEditing(false);
+    processMessage(text);
+  }, [draftMessage]);
+
+  /* ─── Discard draft ─── */
+
+  const discardDraft = useCallback(() => {
+    setDraftMessage('');
+    setInterimText('');
+    setIsEditing(false);
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+    }
+  }, [isListening]);
+
+  /* ─── Process message (voice or typed) — tries Gemini first, falls back to local ─── */
 
   const processMessage = useCallback(async (text: string) => {
     setChatMessages(prev => [...prev, { role: 'user', text }]);
     setIsProcessing(true);
+    setAskInput('');
 
-    // Small delay for UX
-    await new Promise(r => setTimeout(r, 500));
+    const userId = profile?.id || '';
 
+    // Detect if this is a task creation command (local parsing still needed for that)
     const command = parseVoiceCommand(text, people as Profile[]);
-    let response = '';
 
-    switch (command.intent) {
-      case 'greeting': {
-        const pendingCount = (allTasks as any[]).length;
-        const overdueCount = (allTasks as any[]).filter((t: any) => t.due_at && new Date(t.due_at) < new Date() && t.status !== 'done').length;
-        response = `👋 Hello! Here's a quick overview:\n\n📋 **${pendingCount} active tasks** across the team\n⚠️ **${overdueCount} overdue** tasks\n🔔 **${openAlerts.length} AI alerts** pending\n\nWhat would you like to do?`;
-        if (language === 'ml-IN') {
-          speakText(`നമസ്കാരം! ${pendingCount} ടാസ്ക്കുകൾ ആക്ടീവ് ആണ്. ${overdueCount} ഓവർഡ്യൂ ആണ്.`, 'ml-IN');
-        } else {
-          speakText(`Hello! You have ${pendingCount} active tasks and ${overdueCount} overdue.`, 'en-IN');
-        }
-        break;
-      }
-
-      case 'query_pending': {
-        const pending = (allTasks as any[]).filter((t: any) => ['new', 'seen', 'in_progress'].includes(t.status));
-        const grouped: Record<string, number> = {};
-        pending.forEach((t: any) => { grouped[t.status] = (grouped[t.status] || 0) + 1; });
-        response = `📋 **${pending.length} pending tasks:**\n\n`;
-        if (grouped.new) response += `• 🆕 New (unread): **${grouped.new}**\n`;
-        if (grouped.seen) response += `• 👁️ Seen: **${grouped.seen}**\n`;
-        if (grouped.in_progress) response += `• 🔄 In Progress: **${grouped.in_progress}**\n`;
-        response += `\nTop 5 pending:\n`;
-        pending.slice(0, 5).forEach((t: any, i: number) => {
-          response += `${i + 1}. **${t.title}** — ${t.status.replace('_', ' ')}\n`;
-        });
-        if (language === 'ml-IN') {
-          speakText(`${pending.length} ടാസ്ക്കുകൾ ബാക്കിയുണ്ട്`, 'ml-IN');
-        } else {
-          speakText(`You have ${pending.length} pending tasks.`, 'en-IN');
-        }
-        break;
-      }
-
-      case 'query_person': {
-        const person = (people as Profile[]).find(p => p.full_name === command.assigneeName);
-        if (person) {
-          const personTasks = (allTasks as any[]).filter((t: any) => t.owner_id === person.id);
-          const active = personTasks.filter((t: any) => ['new', 'seen', 'in_progress'].includes(t.status));
-          response = `👤 **${person.full_name}** — ${person.job_title || person.role}\n\n`;
-          response += `📋 Active tasks: **${active.length}**\n`;
-          response += `⭐ Points: **${person.points}**\n`;
-          response += `📍 Status: **${person.availability.replace('_', ' ')}**\n\n`;
-          if (active.length > 0) {
-            response += `Current tasks:\n`;
-            active.slice(0, 5).forEach((t: any, i: number) => {
-              response += `${i + 1}. ${t.title}\n`;
-            });
-          }
-        } else {
-          response = `I couldn't find anyone named "${command.assigneeName}". Available team members: ${(people as Profile[]).map(p => p.full_name).join(', ')}`;
-        }
-        break;
-      }
-
-      case 'query_overdue': {
-        const overdue = (allTasks as any[]).filter((t: any) => t.due_at && new Date(t.due_at) < new Date());
-        response = `⚠️ **${overdue.length} overdue tasks:**\n\n`;
-        overdue.slice(0, 8).forEach((t: any, i: number) => {
-          const owner = (people as Profile[]).find(p => p.id === t.owner_id);
-          response += `${i + 1}. **${t.title}** — ${owner?.full_name || 'Unassigned'} (${formatDistanceToNow(new Date(t.due_at), { addSuffix: true })})\n`;
-        });
-        if (overdue.length === 0) response = '✅ No overdue tasks! Everything is on track.';
-        break;
-      }
-
-      case 'query_status': {
-        const total = (allTasks as any[]).length;
-        const overdue = (allTasks as any[]).filter((t: any) => t.due_at && new Date(t.due_at) < new Date()).length;
-        const inProgress = (allTasks as any[]).filter((t: any) => t.status === 'in_progress').length;
-        const submitted = (allTasks as any[]).filter((t: any) => t.status === 'submitted').length;
-        const onDuty = (people as Profile[]).filter(p => p.availability === 'on_duty').length;
-
-        response = `📊 **Today's Status:**\n\n`;
-        response += `📋 Active tasks: **${total}**\n`;
-        response += `🔄 In progress: **${inProgress}**\n`;
-        response += `📥 Awaiting review: **${submitted}**\n`;
-        response += `⚠️ Overdue: **${overdue}**\n`;
-        response += `👥 Staff on duty: **${onDuty}/${(people as Profile[]).length}**\n`;
-        response += `🔔 AI alerts: **${openAlerts.length}**\n`;
-        break;
-      }
-
-      case 'create_task': {
-        if (!command.title || command.title.length < 3) {
-          response = "I couldn't understand the task. Could you describe it more clearly? For example:\n\n\"Assign payment list update to the accountant for today\"";
-          break;
-        }
-
-        // Find assignee
-        let assignee: Profile | undefined;
-        if (command.assigneeName) {
-          assignee = (people as Profile[]).find(p => p.full_name === command.assigneeName);
-        }
-
-        // Find department
-        let departmentId: string | undefined;
-        if (command.department) {
-          // Would query departments in real app, for now skip
-        }
-
-        const dueAt = command.timing === 'urgent'
-          ? addHours(new Date(), 2).toISOString()
-          : addDays(new Date(), 1).toISOString();
-
-        try {
-          const newTask = await createTask.mutateAsync({
-            title: command.title,
-            timing_type: command.timing || 'dated',
-            importance: command.importance || 'normal',
-            due_at: dueAt,
-            owner_id: assignee?.id,
-            proof_type: command.proofType || 'none',
-            source: 'voice',
-          });
-
-          response = `✅ **Task created!**\n\n`;
-          response += `📝 **${command.title}**\n`;
-          response += `👤 Assigned to: **${assignee?.full_name || 'You (unassigned)'}**\n`;
-          response += `⏰ Due: **${format(new Date(dueAt), 'dd MMM yyyy, hh:mm a')}**\n`;
-          response += `🏷️ Timing: **${command.timing || 'dated'}**\n`;
-          if (command.proofType && command.proofType !== 'none') {
-            response += `📎 Proof required: **${command.proofType.replace('_', ' ')}**\n`;
-          }
-          response += `\nThe task has been created and ${assignee ? `${assignee.full_name} will be notified` : 'is waiting to be assigned'}.`;
-
-          // Voice confirmation
-          if (language === 'ml-IN') {
-            speakText(`ടാസ്ക് ക്രിയേറ്റ് ചെയ്തു. ${command.title}. ${assignee ? assignee.full_name + ' ന് അസൈൻ ചെയ്തു.' : ''}`, 'ml-IN');
-          } else {
-            speakText(`Task created. ${command.title}. ${assignee ? `Assigned to ${assignee.full_name}.` : ''}`, 'en-IN');
-          }
-
-          setChatMessages(prev => [...prev, { role: 'ai', text: response, taskCreated: true }]);
-          setIsProcessing(false);
-          return;
-        } catch (err: any) {
-          response = `❌ Error creating task: ${err.message || 'Something went wrong'}. Please try again or create it manually.`;
-        }
-        break;
-      }
-
-      default:
-        response = `🤔 I didn't quite understand that. You can try:\n\n• **"What's pending?"** — See pending tasks\n• **"Assign [task] to [person]"** — Create a task by voice\n• **"Today's status"** — Get a summary\n• **"What's overdue?"** — See late tasks\n\nOr speak in Malayalam — I understand that too! 🇮🇳`;
-        break;
+    // Handle task creation locally (needs mutateAsync)
+    if (command.intent === 'create_task' && command.title && command.title.length >= 3) {
+      await handleTaskCreation(command);
+      setIsProcessing(false);
+      return;
     }
 
+    // ─── Try Gemini API first ───
+    try {
+      const { answer, sources } = await callGeminiAI(text, userId);
+      
+      // Clean up the answer — strip markdown that might cause rendering issues
+      let cleanAnswer = answer;
+
+      // Speak the response (extract plain text for TTS)
+      const plainText = cleanAnswer.replace(/\*\*(.+?)\*\*/g, '$1').replace(/[#•📋⚠️🔔👤📊🔄📥👥✅❌📝⏰🏷️📎🎤🤔💡👋✨🇮🇳]/g, '').trim();
+      if (plainText.length < 300) {
+        speakText(plainText, language);
+      }
+
+      setChatMessages(prev => [...prev, { role: 'ai', text: cleanAnswer }]);
+      setIsProcessing(false);
+      return;
+    } catch {
+      // Gemini unavailable — fall back to local parser
+      console.info('Gemini API unavailable, using local parser');
+    }
+
+    // ─── Local fallback ───
+    const response = buildLocalResponse(command, allTasks as any[], people as Profile[], openAlerts, language);
     setChatMessages(prev => [...prev, { role: 'ai', text: response }]);
     setIsProcessing(false);
-  }, [people, allTasks, openAlerts, language, createTask]);
+  }, [people, allTasks, openAlerts, language, profile]);
+
+  /* ─── Handle task creation ─── */
+
+  const handleTaskCreation = useCallback(async (command: ParsedCommand) => {
+    if (!command.title || command.title.length < 3) {
+      setChatMessages(prev => [...prev, { role: 'ai', text: "I couldn't understand the task. Could you describe it more clearly? For example:\n\n\"Assign payment list update to the accountant for today\"" }]);
+      return;
+    }
+
+    let assignee: Profile | undefined;
+    if (command.assigneeName) {
+      assignee = (people as Profile[]).find(p => p.full_name === command.assigneeName);
+    }
+
+    const dueAt = command.timing === 'urgent'
+      ? addHours(new Date(), 2).toISOString()
+      : addDays(new Date(), 1).toISOString();
+
+    try {
+      await createTask.mutateAsync({
+        title: command.title,
+        timing_type: command.timing || 'dated',
+        importance: command.importance || 'normal',
+        due_at: dueAt,
+        owner_id: assignee?.id,
+        proof_type: command.proofType || 'none',
+        source: 'voice',
+      });
+
+      let response = `✅ **Task created!**\n\n`;
+      response += `📝 **${command.title}**\n`;
+      response += `👤 Assigned to: **${assignee?.full_name || 'You (unassigned)'}**\n`;
+      response += `⏰ Due: **${format(new Date(dueAt), 'dd MMM yyyy, hh:mm a')}**\n`;
+      response += `🏷️ Timing: **${command.timing || 'dated'}**\n`;
+      if (command.proofType && command.proofType !== 'none') {
+        response += `📎 Proof required: **${command.proofType.replace('_', ' ')}**\n`;
+      }
+      response += `\nThe task has been created and ${assignee ? `${assignee.full_name} will be notified` : 'is waiting to be assigned'}.`;
+
+      if (language === 'ml-IN') {
+        speakText(`ടാസ്ക് ക്രിയേറ്റ് ചെയ്തു. ${command.title}. ${assignee ? assignee.full_name + ' ന് അസൈൻ ചെയ്തു.' : ''}`, 'ml-IN');
+      } else {
+        speakText(`Task created. ${command.title}. ${assignee ? `Assigned to ${assignee.full_name}.` : ''}`, 'en-IN');
+      }
+
+      setChatMessages(prev => [...prev, { role: 'ai', text: response, taskCreated: true }]);
+    } catch (err: any) {
+      setChatMessages(prev => [...prev, { role: 'ai', text: `❌ Error creating task: ${err.message || 'Something went wrong'}. Please try again or create it manually.` }]);
+    }
+  }, [people, language, createTask]);
+
+  /* ─── Typed input send handler ─── */
 
   const handleSend = () => {
     if (!askInput.trim()) return;
@@ -447,7 +560,7 @@ export default function AIManagerPage() {
         </div>
         <div className="flex-1">
           <h1 className="text-2xl font-bold">AI Manager</h1>
-          <p className="text-xs text-[var(--color-ink)]/40">Speak in English or Malayalam to manage tasks</p>
+          <p className="text-xs text-[var(--color-ink)]/40">Powered by Gemini • Speak in English or Malayalam</p>
         </div>
         {/* Language toggle */}
         <button
@@ -544,7 +657,7 @@ export default function AIManagerPage() {
           </div>
 
           {/* Quick suggestions */}
-          {chatMessages.length <= 1 && (
+          {chatMessages.length <= 1 && !draftMessage && (
             <div className="px-4 pb-2 flex flex-wrap gap-2">
               {[
                 language === 'ml-IN' ? 'എന്ത് ബാക്കിയുണ്ട്?' : "What's pending?",
@@ -563,26 +676,123 @@ export default function AIManagerPage() {
             </div>
           )}
 
-          {/* Input bar with mic */}
+          {/* ─── Draft confirmation banner ─── */}
+          {(draftMessage || (isListening && interimText)) && (
+            <div className="px-3 pb-1">
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <MessageSquare className="w-3.5 h-3.5 text-amber-600" />
+                  <span className="text-xs font-semibold text-amber-700">
+                    {isListening ? '🎤 Listening... (tap Done when finished)' : '📝 Review your message before sending'}
+                  </span>
+                </div>
+
+                {isEditing ? (
+                  <textarea
+                    ref={draftInputRef}
+                    value={draftMessage}
+                    onChange={(e) => setDraftMessage(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-amber-300 bg-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-amber-400"
+                    rows={2}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        setIsEditing(false);
+                        confirmAndSend();
+                      }
+                    }}
+                  />
+                ) : (
+                  <p className="text-sm text-[var(--color-ink)] bg-white rounded-lg px-3 py-2 border border-amber-200">
+                    {draftMessage}
+                    {isListening && interimText && (
+                      <span className="text-[var(--color-ink)]/40 italic"> {interimText}</span>
+                    )}
+                    {isListening && !draftMessage && !interimText && (
+                      <span className="text-[var(--color-ink)]/30 italic">Speak now...</span>
+                    )}
+                  </p>
+                )}
+
+                <div className="flex items-center gap-2 mt-2">
+                  {isListening ? (
+                    /* While still recording */
+                    <Button
+                      size="sm"
+                      onClick={stopListening}
+                      className="bg-[var(--color-maroon)] text-white text-xs h-8"
+                    >
+                      <Square className="w-3 h-3 mr-1" /> Done speaking
+                    </Button>
+                  ) : (
+                    /* After recording — confirm / edit / discard */
+                    <>
+                      <Button
+                        size="sm"
+                        onClick={confirmAndSend}
+                        disabled={!draftMessage.trim() || isProcessing}
+                        className="bg-green-600 hover:bg-green-700 text-white text-xs h-8"
+                      >
+                        <Send className="w-3 h-3 mr-1" /> Send
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setIsEditing(!isEditing)}
+                        className="text-xs h-8"
+                      >
+                        <Edit3 className="w-3 h-3 mr-1" /> Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          // Re-record
+                          setDraftMessage('');
+                          setInterimText('');
+                          startListening();
+                        }}
+                        className="text-xs h-8"
+                      >
+                        <Mic className="w-3 h-3 mr-1" /> Re-record
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={discardDraft}
+                        className="text-xs h-8 text-red-500 hover:text-red-700"
+                      >
+                        <Trash2 className="w-3 h-3 mr-1" /> Discard
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ─── Input bar with mic ─── */}
           <div className="p-3 border-t border-[#E5DDD3]">
             <div className="flex items-center gap-2">
               {/* Mic button */}
               <button
                 onClick={isListening ? stopListening : startListening}
-                disabled={isProcessing}
+                disabled={isProcessing || (!!draftMessage && !isListening)}
                 className={cn(
                   'w-12 h-12 rounded-full flex items-center justify-center transition-all shrink-0',
                   isListening
                     ? 'bg-[var(--color-urgent)] text-white animate-pulse shadow-lg scale-110'
-                    : 'bg-[var(--color-maroon)] text-white hover:bg-[var(--color-maroon)]/90 shadow-md'
+                    : draftMessage
+                      ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                      : 'bg-[var(--color-maroon)] text-white hover:bg-[var(--color-maroon)]/90 shadow-md'
                 )}
               >
-                {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                {isListening ? <Square className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
               </button>
 
               {isListening ? (
                 <div className="flex-1 px-4 py-2.5 rounded-xl bg-red-50 border border-red-200 text-sm text-[var(--color-urgent)] animate-pulse">
-                  🎤 Listening{language === 'ml-IN' ? ' (മലയാളം)' : ' (English)'}... Speak now
+                  🎤 Listening{language === 'ml-IN' ? ' (മലയാളം)' : ' (English)'}... Speak freely, then tap Done
                 </div>
               ) : (
                 <input
@@ -591,7 +801,7 @@ export default function AIManagerPage() {
                   onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                   className="flex-1 px-4 py-2.5 rounded-xl border border-[#E5DDD3] bg-[var(--color-ivory)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-maroon)]"
                   placeholder={language === 'ml-IN' ? 'ഇവിടെ ടൈപ്പ് ചെയ്യൂ അല്ലെങ്കിൽ മൈക്ക് അമർത്തൂ...' : 'Type or press mic to speak...'}
-                  disabled={isProcessing}
+                  disabled={isProcessing || !!draftMessage}
                 />
               )}
 
@@ -605,7 +815,7 @@ export default function AIManagerPage() {
                 </button>
               )}
 
-              {!isListening && (
+              {!isListening && !draftMessage && (
                 <Button onClick={handleSend} disabled={!askInput.trim() || isProcessing} className="shrink-0">
                   <Send className="w-4 h-4" />
                 </Button>
